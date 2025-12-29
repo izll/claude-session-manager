@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/creack/pty"
 )
 
 // ansiRegex matches ANSI escape sequences
@@ -38,6 +40,9 @@ type Instance struct {
 	Color           string    `json:"color,omitempty"`             // Foreground color
 	BgColor         string    `json:"bg_color,omitempty"`          // Background color
 	FullRowColor    bool      `json:"full_row_color,omitempty"`    // Extend background to full row
+
+	// ptmx is a PTY running tmux attach - used to control pane size while detached
+	ptmx *os.File `json:"-"`
 }
 
 // expandTilde expands ~ to user's home directory
@@ -107,56 +112,67 @@ func (i *Instance) StartWithResume(resumeID string) error {
 
 	// Check if tmux session already exists
 	checkCmd := exec.Command("tmux", "has-session", "-t", sessionName)
-	if checkCmd.Run() == nil {
-		// Session exists, just update status
-		i.Status = StatusRunning
-		i.UpdatedAt = time.Now()
-		return nil
+	sessionExists := checkCmd.Run() == nil
+
+	if !sessionExists {
+		// Build claude command
+		claudeArgs := []string{}
+		if i.AutoYes {
+			claudeArgs = append(claudeArgs, "--dangerously-skip-permissions")
+		}
+
+		// Add resume flag if specified
+		if resumeID != "" {
+			claudeArgs = append(claudeArgs, "--resume", resumeID)
+			i.ResumeSessionID = resumeID
+		} else if i.ResumeSessionID != "" {
+			claudeArgs = append(claudeArgs, "--resume", i.ResumeSessionID)
+		}
+
+		claudeCmd := "claude " + strings.Join(claudeArgs, " ")
+
+		// Create new tmux session
+		cmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", i.Path, claudeCmd)
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to create tmux session: %w", err)
+		}
+
+		// Wait for session to be ready
+		for j := 0; j < 20; j++ {
+			checkCmd := exec.Command("tmux", "has-session", "-t", sessionName)
+			if checkCmd.Run() == nil {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		// Configure tmux session for better scrolling
+		exec.Command("tmux", "set-option", "-t", sessionName, "history-limit", "50000").Run()
+		exec.Command("tmux", "set-option", "-t", sessionName, "mouse", "on").Run()
+
+		// Use latest client size and aggressive resize for proper terminal following
+		exec.Command("tmux", "set-option", "-t", sessionName, "window-size", "latest").Run()
+		exec.Command("tmux", "set-option", "-t", sessionName, "aggressive-resize", "on").Run()
+
+		// Enable xterm keys for Shift+PageUp/Down support
+		exec.Command("tmux", "set-option", "-t", sessionName, "-g", "xterm-keys", "on").Run()
+
+		// Set terminal overrides for better key support
+		exec.Command("tmux", "set-option", "-t", sessionName, "-ga", "terminal-overrides", ",xterm*:smcup@:rmcup@").Run()
+
+		// Bind Shift+PageUp/Down for scrolling in copy mode
+		exec.Command("tmux", "bind-key", "-T", "root", "S-PageUp", "copy-mode", "-eu").Run()
+		exec.Command("tmux", "bind-key", "-T", "root", "S-PageDown", "send-keys", "PageDown").Run()
+		exec.Command("tmux", "bind-key", "-T", "copy-mode-vi", "S-PageUp", "send-keys", "-X", "page-up").Run()
+		exec.Command("tmux", "bind-key", "-T", "copy-mode-vi", "S-PageDown", "send-keys", "-X", "page-down").Run()
+
+		// Ctrl+q will be set up with resize in UpdateDetachBinding
 	}
 
-	// Build claude command
-	claudeArgs := []string{}
-	if i.AutoYes {
-		claudeArgs = append(claudeArgs, "--dangerously-skip-permissions")
+	// Attach through PTY and keep the handle for size control (like Claude Squad)
+	if err := i.attachPty(); err != nil {
+		return fmt.Errorf("failed to attach PTY: %w", err)
 	}
-
-	// Add resume flag if specified
-	if resumeID != "" {
-		claudeArgs = append(claudeArgs, "--resume", resumeID)
-		i.ResumeSessionID = resumeID
-	} else if i.ResumeSessionID != "" {
-		claudeArgs = append(claudeArgs, "--resume", i.ResumeSessionID)
-	}
-
-	claudeCmd := "claude " + strings.Join(claudeArgs, " ")
-
-	// Create new tmux session
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", i.Path, claudeCmd)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to create tmux session: %w", err)
-	}
-
-	// Configure tmux session for better scrolling
-	exec.Command("tmux", "set-option", "-t", sessionName, "history-limit", "50000").Run()
-	exec.Command("tmux", "set-option", "-t", sessionName, "mouse", "on").Run()
-
-	// Enable aggressive resize - tmux will resize to fit the current client
-	exec.Command("tmux", "set-window-option", "-t", sessionName, "aggressive-resize", "on").Run()
-
-	// Enable xterm keys for Shift+PageUp/Down support
-	exec.Command("tmux", "set-option", "-t", sessionName, "-g", "xterm-keys", "on").Run()
-
-	// Set terminal overrides for better key support
-	exec.Command("tmux", "set-option", "-t", sessionName, "-ga", "terminal-overrides", ",xterm*:smcup@:rmcup@").Run()
-
-	// Bind Shift+PageUp/Down for scrolling in copy mode
-	exec.Command("tmux", "bind-key", "-T", "root", "S-PageUp", "copy-mode", "-eu").Run()
-	exec.Command("tmux", "bind-key", "-T", "root", "S-PageDown", "send-keys", "PageDown").Run()
-	exec.Command("tmux", "bind-key", "-T", "copy-mode-vi", "S-PageUp", "send-keys", "-X", "page-up").Run()
-	exec.Command("tmux", "bind-key", "-T", "copy-mode-vi", "S-PageDown", "send-keys", "-X", "page-down").Run()
-
-	// Simple detach with Ctrl+q (no prefix needed)
-	exec.Command("tmux", "bind-key", "-n", "C-q", "detach-client").Run()
 
 	i.Status = StatusRunning
 	i.UpdatedAt = time.Now()
@@ -164,9 +180,27 @@ func (i *Instance) StartWithResume(resumeID string) error {
 	return nil
 }
 
+// attachPty attaches to the tmux session through a PTY and keeps the handle
+func (i *Instance) attachPty() error {
+	sessionName := i.TmuxSessionName()
+	cmd := exec.Command("tmux", "attach-session", "-t", sessionName)
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		return err
+	}
+	i.ptmx = ptmx
+	return nil
+}
+
 func (i *Instance) Stop() error {
 	if i.Status != StatusRunning {
 		return nil
+	}
+
+	// Close PTY handle
+	if i.ptmx != nil {
+		i.ptmx.Close()
+		i.ptmx = nil
 	}
 
 	sessionName := i.TmuxSessionName()
@@ -201,14 +235,53 @@ func (i *Instance) IsAlive() bool {
 	return cmd.Run() == nil
 }
 
+// ResizePane resizes the tmux pane to the specified dimensions
+func (i *Instance) ResizePane(width, height int) error {
+	if !i.IsAlive() {
+		return nil
+	}
+	sessionName := i.TmuxSessionName()
+	return exec.Command("tmux", "resize-window", "-t", sessionName, "-x", fmt.Sprintf("%d", width), "-y", fmt.Sprintf("%d", height)).Run()
+}
+
+// UpdateDetachBinding updates Ctrl+Q to resize to preview size before detaching
+func (i *Instance) UpdateDetachBinding(previewWidth, previewHeight int) {
+	if !i.IsAlive() {
+		return
+	}
+	sessionName := i.TmuxSessionName()
+	// Bind Ctrl+Q to: resize-window, then detach - all in one shell command
+	shellCmd := fmt.Sprintf("tmux resize-window -t %s -x %d -y %d; tmux detach-client", sessionName, previewWidth, previewHeight)
+	exec.Command("tmux", "bind-key", "-n", "C-q", "run-shell", shellCmd).Run()
+}
+
+// EnsurePty ensures we have a PTY connection (for restored instances)
+func (i *Instance) EnsurePty() error {
+	if i.ptmx != nil {
+		return nil
+	}
+	if !i.IsAlive() {
+		return nil
+	}
+	return i.attachPty()
+}
+
+// ClosePty closes the PTY connection
+func (i *Instance) ClosePty() {
+	if i.ptmx != nil {
+		i.ptmx.Close()
+		i.ptmx = nil
+	}
+}
+
 func (i *Instance) GetPreview(lines int) (string, error) {
 	if !i.IsAlive() {
 		return "(session not running)", nil
 	}
 
 	sessionName := i.TmuxSessionName()
-	// Capture entire scrollback and visible pane with colors (-e flag)
-	cmd := exec.Command("tmux", "capture-pane", "-t", sessionName, "-p", "-e", "-S", "-", "-E", "-")
+	// Capture visible pane with colors (-e flag)
+	cmd := exec.Command("tmux", "capture-pane", "-t", sessionName, "-p", "-e")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to capture pane: %w", err)
@@ -216,36 +289,6 @@ func (i *Instance) GetPreview(lines int) (string, error) {
 
 	// Get all lines
 	allLines := strings.Split(strings.TrimRight(string(output), "\n"), "\n")
-
-	// Remove trailing Claude UI elements (status bar, separators, empty prompt)
-	for len(allLines) > 0 {
-		line := allLines[len(allLines)-1]
-		// Strip ANSI codes for checking, but keep original line
-		cleanLine := strings.TrimSpace(stripANSI(line))
-		// Skip empty lines
-		if cleanLine == "" {
-			allLines = allLines[:len(allLines)-1]
-			continue
-		}
-		// Skip status bar line (contains "? for shortcuts" or "Context left" or "accept edits")
-		if strings.Contains(cleanLine, "? for") || strings.Contains(cleanLine, "Context left") || strings.Contains(cleanLine, "accept edits") {
-			allLines = allLines[:len(allLines)-1]
-			continue
-		}
-		// Skip separator lines (mostly ─ characters)
-		dashCount := strings.Count(cleanLine, "─")
-		if dashCount > 20 {
-			allLines = allLines[:len(allLines)-1]
-			continue
-		}
-		// Skip empty prompt (just > or ╭─ box characters)
-		if cleanLine == ">" || strings.HasPrefix(cleanLine, "╭") || strings.HasPrefix(cleanLine, "╰") {
-			allLines = allLines[:len(allLines)-1]
-			continue
-		}
-		// Found actual content, stop trimming
-		break
-	}
 
 	// Take last N lines
 	startIdx := len(allLines) - lines

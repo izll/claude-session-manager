@@ -2,7 +2,7 @@
 
 A powerful terminal UI (TUI) application for managing multiple Claude Code instances using tmux. Inspired by [Claude Squad](https://github.com/smtg-ai/claude-squad).
 
-![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)
+![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat&logo=go)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 
 ## Features
@@ -15,12 +15,13 @@ A powerful terminal UI (TUI) application for managing multiple Claude Code insta
 - **Prompt Sending** - Send messages to running sessions without attaching
 - **Session Reordering** - Organize sessions with keyboard shortcuts
 - **Compact Mode** - Toggle spacing between sessions for denser view
+- **Smart Resize** - Terminal resize follows when attached, preview size preserved when detached
 
 ## Installation
 
 ### Prerequisites
 
-- Go 1.21 or later
+- Go 1.24 or later
 - tmux
 - [Claude Code CLI](https://github.com/anthropics/claude-code) installed and configured
 
@@ -81,6 +82,7 @@ csm
 #### Other
 | Key | Action |
 |-----|--------|
+| `R` | Force resize preview pane |
 | `?` | Show help |
 | `q` | Quit |
 
@@ -133,10 +135,8 @@ Each session stores:
 ```
 claude-session-manager/
 ├── main.go           # Entry point
-├── cmd/              # CLI commands
-├── config/           # Configuration handling
 ├── session/          # Session management & tmux integration
-│   ├── instance.go   # Instance lifecycle
+│   ├── instance.go   # Instance lifecycle & PTY handling
 │   ├── storage.go    # Persistence
 │   └── claude_sessions.go  # Claude session discovery
 └── ui/               # Bubbletea TUI
@@ -148,6 +148,7 @@ claude-session-manager/
 - [Bubble Tea](https://github.com/charmbracelet/bubbletea) - TUI framework
 - [Lip Gloss](https://github.com/charmbracelet/lipgloss) - Style definitions
 - [Bubbles](https://github.com/charmbracelet/bubbles) - TUI components
+- [creack/pty](https://github.com/creack/pty) - PTY handling for tmux resize control
 
 ## Contributing
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -130,6 +131,8 @@ func NewModel() (Model, error) {
 	promptInput := textinput.New()
 	promptInput.Placeholder = "Enter message to send..."
 	promptInput.CharLimit = 1000
+	promptInput.Prompt = "" // Remove the default "> " prompt
+	promptInput.Cursor.SetMode(cursor.CursorStatic) // No blinking
 
 	m := Model{
 		instances:   instances,
@@ -146,6 +149,10 @@ func NewModel() (Model, error) {
 	// Initialize status and last lines for all instances
 	for _, inst := range instances {
 		inst.UpdateStatus()
+		// Ensure PTY connection for running instances (for size control)
+		if inst.Status == session.StatusRunning {
+			inst.EnsurePty()
+		}
 		m.lastLines[inst.ID] = inst.GetLastLine()
 	}
 
@@ -186,11 +193,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Resize selected instance's tmux pane to match preview width
+		if len(m.instances) > 0 && m.cursor < len(m.instances) {
+			inst := m.instances[m.cursor]
+			previewWidth := m.width - 45 - 3 // Same calculation as in listView
+			if previewWidth < 40 {
+				previewWidth = 40
+			}
+			tmuxWidth := previewWidth - 2 // Slightly narrower to avoid line wrapping
+			if inst.Status == session.StatusRunning {
+				inst.ResizePane(tmuxWidth, m.height-8)
+				// Update Ctrl+Q binding to resize to preview before detach
+				inst.UpdateDetachBinding(tmuxWidth, m.height-8)
+			}
+		}
 		return m, nil
 
 	case reattachMsg:
-		// Re-enable mouse after returning from tmux attach
-		return m, tea.EnableMouseCellMotion
+		// Ctrl+Q should have resized before detach, but do backup resize
+		if len(m.instances) > 0 && m.cursor < len(m.instances) {
+			inst := m.instances[m.cursor]
+			if inst.Status == session.StatusRunning {
+				previewWidth := m.width - 45 - 3
+				if previewWidth < 40 {
+					previewWidth = 40
+				}
+				tmuxWidth := previewWidth - 2 // Slightly narrower to avoid line wrapping
+				inst.ResizePane(tmuxWidth, m.height-8)
+				// Reattach PTY for preview size control
+				inst.EnsurePty()
+			}
+		}
+		// Clear screen and re-enable mouse
+		return m, tea.Batch(tea.ClearScreen, tea.EnableMouseCellMotion)
 
 	case tea.MouseMsg:
 		// Handle mouse wheel scrolling in list view
@@ -295,6 +330,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
+// resizeSelectedPane resizes the currently selected instance's tmux pane
+func (m *Model) resizeSelectedPane() {
+	if len(m.instances) > 0 && m.cursor < len(m.instances) {
+		inst := m.instances[m.cursor]
+		previewWidth := m.width - 45 - 3
+		if previewWidth < 40 {
+			previewWidth = 40
+		}
+		tmuxWidth := previewWidth - 2 // Slightly narrower to avoid line wrapping
+		inst.ResizePane(tmuxWidth, m.height-8)
+	}
+}
+
 func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
@@ -303,11 +351,13 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
+			m.resizeSelectedPane()
 		}
 
 	case "down", "j":
 		if m.cursor < len(m.instances)-1 {
 			m.cursor++
+			m.resizeSelectedPane()
 		}
 
 	case "shift+up", "K":
@@ -337,8 +387,21 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				m.storage.UpdateInstance(inst)
 			}
-			// Attach using exec.Command with -d flag to force resize to current terminal
-			cmd := exec.Command("tmux", "attach-session", "-d", "-t", inst.TmuxSessionName())
+			sessionName := inst.TmuxSessionName()
+			// Ensure window-size is set to latest for proper terminal resize following
+			exec.Command("tmux", "set-option", "-t", sessionName, "window-size", "latest").Run()
+			exec.Command("tmux", "set-option", "-t", sessionName, "aggressive-resize", "on").Run()
+			// Set up Ctrl+Q to resize to preview size before detach
+			previewWidth := m.width - 45 - 3
+			if previewWidth < 40 {
+				previewWidth = 40
+			}
+			tmuxWidth := previewWidth - 2 // Slightly narrower to avoid line wrapping
+			inst.UpdateDetachBinding(tmuxWidth, m.height-8)
+			// Close PTY so tmux can follow terminal size during attach
+			inst.ClosePty()
+			// Attach using tmux attach-session
+			cmd := exec.Command("tmux", "attach-session", "-t", sessionName)
 			return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 				return reattachMsg{}
 			})
@@ -435,16 +498,39 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.compactList = !m.compactList
 
 	case "p":
-		// Send prompt to session
+		// Send prompt to session (single line)
 		if len(m.instances) > 0 {
 			inst := m.instances[m.cursor]
 			if inst.Status == session.StatusRunning {
 				m.promptInput.SetValue("")
+				// Set width for the input field
+				inputWidth := 50
+				if m.width > 80 {
+					inputWidth = m.width/2 - 10
+				}
+				if inputWidth > 70 {
+					inputWidth = 70
+				}
+				m.promptInput.Width = inputWidth
 				m.promptInput.Focus()
 				m.state = statePrompt
-				return m, textinput.Blink
+				return m, nil
 			} else {
 				m.err = fmt.Errorf("session not running")
+			}
+		}
+
+	case "R":
+		// Force resize selected pane
+		if len(m.instances) > 0 && m.cursor < len(m.instances) {
+			inst := m.instances[m.cursor]
+			previewWidth := m.width - 45 - 3
+			if previewWidth < 40 {
+				previewWidth = 40
+			}
+			tmuxWidth := previewWidth - 2 // Slightly narrower to avoid line wrapping
+			if err := inst.ResizePane(tmuxWidth, m.height-8); err != nil {
+				m.err = err
 			}
 		}
 	}
@@ -1310,27 +1396,11 @@ func (m Model) listView() string {
 		if m.preview != "" {
 			lines := strings.Split(m.preview, "\n")
 
-			// Filter out Claude UI elements first
-			var filteredLines []string
-			for _, line := range lines {
-				cleanLine := stripANSI(line)
-				// Skip Claude UI separator lines
-				if strings.Count(cleanLine, "─") > 20 {
-					continue
-				}
-				// Skip status bar and prompt lines
-				if strings.Contains(cleanLine, "? for") || strings.Contains(cleanLine, "Context left") || strings.Contains(cleanLine, "accept edits") {
-					continue
-				}
-				trimmed := strings.TrimSpace(cleanLine)
-				if trimmed == ">" || strings.HasPrefix(trimmed, "╭") || strings.HasPrefix(trimmed, "╰") {
-					continue
-				}
-				filteredLines = append(filteredLines, line)
-			}
+			// No filtering needed - we capture visible pane only (like Claude Squad)
+			filteredLines := lines
 
 			// Show last N lines - simple limit (account for header: title, path, spacing)
-			maxLines := contentHeight - 10
+			maxLines := contentHeight - 6
 			if maxLines < 5 {
 				maxLines = 5
 			}
@@ -1343,7 +1413,7 @@ func (m Model) listView() string {
 				rightPane.WriteString("\n")
 			}
 			for i := startIdx; i < len(filteredLines); i++ {
-				rightPane.WriteString("  " + filteredLines[i] + "\n")
+				rightPane.WriteString("  " + filteredLines[i] + "\x1b[0m\n")
 			}
 		} else {
 			rightPane.WriteString(dimStyle.Render("  (no output yet)"))
@@ -1588,7 +1658,7 @@ func (m Model) promptView() string {
 	}
 
 	boxContent.WriteString("  Message:\n")
-	boxContent.WriteString("  " + m.promptInput.View() + "\n\n")
+	boxContent.WriteString("  > " + m.promptInput.View() + "\n\n")
 	boxContent.WriteString(helpStyle.Render("  enter: send  esc: cancel"))
 	boxContent.WriteString("\n")
 
