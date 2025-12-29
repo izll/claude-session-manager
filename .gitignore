@@ -1,0 +1,14 @@
+# Binary
+csm
+
+# Claude Code local settings
+.claude/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
