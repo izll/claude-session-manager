@@ -89,8 +89,10 @@ csm
 ### Inside Attached Session
 | Key | Action |
 |-----|--------|
-| `Ctrl+q` | Detach from session (quick) |
+| `Ctrl+q` | Detach from session (quick, works in any tmux session) |
 | `Ctrl+b d` | Detach from session (tmux default) |
+
+> **Note:** `Ctrl+q` is set as a universal quick-detach for all tmux sessions. CSM sessions get automatic resize before detach to maintain proper preview dimensions.
 
 ## Color Customization
 
