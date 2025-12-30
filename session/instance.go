@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/izll/claude-session-manager/session/filters"
+	"github.com/izll/agent-session-manager/session/filters"
 )
 
 // ansiRegex matches ANSI escape sequences
@@ -140,7 +140,7 @@ func expandTilde(path string) string {
 	return path
 }
 
-func NewInstance(name, path string, autoYes bool) (*Instance, error) {
+func NewInstance(name, path string, autoYes bool, agent AgentType) (*Instance, error) {
 	// Expand ~ to home directory
 	path = expandTilde(path)
 
@@ -153,7 +153,7 @@ func NewInstance(name, path string, autoYes bool) (*Instance, error) {
 		return nil, fmt.Errorf("path does not exist: %s", absPath)
 	}
 
-	id := generateID(name)
+	id := generateID(name, agent)
 	now := time.Now()
 
 	return &Instance{
@@ -164,18 +164,23 @@ func NewInstance(name, path string, autoYes bool) (*Instance, error) {
 		CreatedAt: now,
 		UpdatedAt: now,
 		AutoYes:   autoYes,
+		Agent:     agent,
 	}, nil
 }
 
-func generateID(name string) string {
+func generateID(name string, agent AgentType) string {
 	sanitized := strings.ToLower(name)
 	sanitized = strings.ReplaceAll(sanitized, " ", "_")
 	timestamp := time.Now().UnixNano()
-	return fmt.Sprintf("csm_%s_%d", sanitized, timestamp)
+	agentStr := string(agent)
+	if agentStr == "" {
+		agentStr = "claude"
+	}
+	return fmt.Sprintf("asm_%s_%s_%d", agentStr, sanitized, timestamp)
 }
 
 func (i *Instance) TmuxSessionName() string {
-	return fmt.Sprintf("csm_%s", i.ID)
+	return i.ID
 }
 
 // CheckAgentCommand verifies that the agent command exists in PATH
@@ -365,10 +370,10 @@ func (i *Instance) UpdateDetachBinding(previewWidth, previewHeight int) {
 		return
 	}
 	sessionName := i.TmuxSessionName()
-	// Bind Ctrl+Q: CSM sessions get resize+detach, all others get plain detach
+	// Bind Ctrl+Q: ASM sessions get resize+detach, all others get plain detach
 	shellScript := fmt.Sprintf(`
 SESSION=$(tmux display-message -p '#{session_name}')
-if echo "$SESSION" | grep -q '^csm_'; then
+if echo "$SESSION" | grep -q '^asm_'; then
   tmux resize-window -t %s -x %d -y %d
 fi
 tmux detach-client

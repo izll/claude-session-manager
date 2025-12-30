@@ -5,7 +5,7 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/izll/claude-session-manager/ui"
+	"github.com/izll/agent-session-manager/ui"
 )
 
 func main() {

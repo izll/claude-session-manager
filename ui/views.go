@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/izll/claude-session-manager/session"
+	"github.com/izll/agent-session-manager/session"
 )
 
 // truncateRunes truncates a string to maxLen runes and adds ellipsis if needed
@@ -139,7 +139,7 @@ func (m Model) helpView() string {
 		Background(lipgloss.Color("#7D56F4")).
 		Bold(true).
 		Padding(0, 3).
-		Render(" Claude Session Manager - Help ")
+		Render(" Agent Session Manager - Help ")
 
 	b.WriteString(lipgloss.PlaceHorizontal(m.width, lipgloss.Center, title))
 	b.WriteString("\n\n")
@@ -245,11 +245,11 @@ func (m Model) helpView() string {
 	b.WriteString(separatorStyle.Render("  " + strings.Repeat("─", 60)))
 	b.WriteString("\n\n")
 
-	b.WriteString(infoStyle.Render("  Claude Session Manager (CSM) - Manage multiple Claude Code instances"))
+	b.WriteString(infoStyle.Render("  Agent Session Manager (ASM) - Manage multiple AI coding agents"))
 	b.WriteString("\n")
-	b.WriteString(infoStyle.Render("  Sessions stored in: ~/.config/claude-session-manager/"))
+	b.WriteString(infoStyle.Render("  Sessions stored in: ~/.config/agent-session-manager/"))
 	b.WriteString("\n")
-	b.WriteString(infoStyle.Render("  Built with Bubble Tea • github.com/izll/claude-session-manager"))
+	b.WriteString(infoStyle.Render("  Built with Bubble Tea • github.com/izll/agent-session-manager"))
 	b.WriteString("\n\n")
 
 	// Footer

@@ -7,7 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/izll/claude-session-manager/session"
+	"github.com/izll/agent-session-manager/session"
 )
 
 // Layout constants
@@ -190,7 +190,7 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		tickCmd(),
 		tea.EnterAltScreen,
-		tea.SetWindowTitle("Claude Session Manager"),
+		tea.SetWindowTitle("Agent Session Manager"),
 		tea.EnableMouseCellMotion,
 	)
 }

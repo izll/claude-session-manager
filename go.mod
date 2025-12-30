@@ -1,4 +1,4 @@
-module github.com/izll/claude-session-manager
+module github.com/izll/agent-session-manager
 
 go 1.24.2
 

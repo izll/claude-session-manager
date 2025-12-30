@@ -29,7 +29,7 @@ var filtersLoaded bool
 // GetFiltersPath returns the path to the filters config file
 func GetFiltersPath() string {
 	homeDir, _ := os.UserHomeDir()
-	return filepath.Join(homeDir, ".config", "claude-session-manager", "filters.json")
+	return filepath.Join(homeDir, ".config", "agent-session-manager", "filters.json")
 }
 
 // LoadFilters loads filter configurations from file

@@ -1,4 +1,4 @@
-# Claude Session Manager (CSM)
+# Agent Session Manager (ASM)
 
 A powerful terminal UI (TUI) application for managing multiple AI coding assistant CLI sessions using tmux. Inspired by [Claude Squad](https://github.com/smtg-ai/claude-squad).
 
@@ -49,18 +49,18 @@ A powerful terminal UI (TUI) application for managing multiple AI coding assista
 ### Build from Source
 
 ```bash
-git clone https://github.com/izll/claude-session-manager.git
-cd claude-session-manager
-go build -o csm .
+git clone https://github.com/izll/agent-session-manager.git
+cd agent-session-manager
+go build -o asmgr .
 ```
 
 ### Install to PATH
 
 ```bash
 # Linux/macOS
-cp csm ~/.local/bin/
+cp asmgr ~/.local/bin/
 # or
-sudo cp csm /usr/local/bin/
+sudo cp asmgr /usr/local/bin/
 ```
 
 ## Usage
@@ -68,7 +68,7 @@ sudo cp csm /usr/local/bin/
 Simply run:
 
 ```bash
-csm
+asmgr
 ```
 
 ### Keyboard Shortcuts
@@ -125,7 +125,7 @@ csm
 | `Ctrl+q` | Detach from session (quick, works in any tmux session) |
 | `Ctrl+b d` | Detach from session (tmux default) |
 
-> **Note:** `Ctrl+q` is set as a universal quick-detach for all tmux sessions. CSM sessions get automatic resize before detach to maintain proper preview dimensions.
+> **Note:** `Ctrl+q` is set as a universal quick-detach for all tmux sessions. ASM sessions get automatic resize before detach to maintain proper preview dimensions.
 
 ## Color Customization
 
@@ -141,7 +141,7 @@ Use `Tab` to switch between foreground and background color selection.
 
 ## Session Resume
 
-CSM can resume previous Claude Code conversations:
+ASM can resume previous Claude Code conversations:
 
 1. Press `r` on any session
 2. Browse through previous conversations (shows last message and timestamp)
@@ -174,13 +174,13 @@ Sessions without a group appear at the bottom of the list.
 
 Sessions show different status indicators:
 
-- `●` Orange - Active (Claude is working)
+- `●` Orange - Active (agent is working)
 - `●` Gray - Idle (waiting for input)
 - `○` Red outline - Stopped
 
 ## Configuration
 
-Configuration files are stored in `~/.config/claude-session-manager/`:
+Configuration files are stored in `~/.config/agent-session-manager/`:
 
 ### sessions.json
 Stores sessions and groups:
@@ -209,7 +209,7 @@ Customize status line filtering for each agent. Default filters are built-in, bu
 ## Architecture
 
 ```
-claude-session-manager/
+agent-session-manager/
 ├── main.go              # Entry point
 ├── session/             # Session management & tmux integration
 │   ├── instance.go      # Instance lifecycle & PTY handling

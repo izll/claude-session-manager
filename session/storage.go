@@ -40,7 +40,7 @@ func NewStorage() (*Storage, error) {
 		return nil, fmt.Errorf("failed to get home directory: %w", err)
 	}
 
-	configDir := filepath.Join(homeDir, ".config", "claude-session-manager")
+	configDir := filepath.Join(homeDir, ".config", "agent-session-manager")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create config directory: %w", err)
 	}

@@ -8,7 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/izll/claude-session-manager/session"
+	"github.com/izll/agent-session-manager/session"
 )
 
 // handleMoveSessionUp moves the selected session or group up in the list
@@ -579,15 +579,14 @@ func (m Model) handleNewNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if m.nameInput.Value() != "" {
 			// Create instance with the entered name and stored path
-			inst, err := session.NewInstance(m.nameInput.Value(), m.pathInput.Value(), m.autoYes)
+			inst, err := session.NewInstance(m.nameInput.Value(), m.pathInput.Value(), m.autoYes, m.pendingAgent)
 			if err != nil {
 				m.err = err
 				m.state = stateList
 				return m, nil
 			}
 
-			// Set agent type and custom command
-			inst.Agent = m.pendingAgent
+			// Set custom command for custom agent
 			if m.pendingAgent == session.AgentCustom {
 				inst.CustomCommand = m.customCmdInput.Value()
 			}
