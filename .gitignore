@@ -8,6 +8,9 @@ CLAUDE.md
 # Claude Code local settings
 .claude/
 
+# OpenCode local settings
+.opencode/
+
 # IDE
 .idea/
 *.iml
