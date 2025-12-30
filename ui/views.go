@@ -1240,43 +1240,95 @@ func (m Model) buildStatusBar() string {
 
 	sep := separatorStyle.Render(" │ ")
 
-	// Build status items
-	var items []string
+	// Priority groups (high to low)
+	// P1: Essential - always shown
+	p1 := []string{
+		keyStyle.Render("n") + descStyle.Render(" new"),
+		keyStyle.Render("enter") + descStyle.Render(" attach"),
+		keyStyle.Render("?") + descStyle.Render(" help"),
+		keyStyle.Render("q") + descStyle.Render(" quit"),
+	}
 
-	items = append(items, keyStyle.Render("n")+descStyle.Render(" new"))
-	items = append(items, keyStyle.Render("r")+descStyle.Render(" resume"))
-	items = append(items, keyStyle.Render("p")+descStyle.Render(" prompt"))
-	items = append(items, keyStyle.Render("e")+descStyle.Render(" rename"))
-	items = append(items, keyStyle.Render("s")+descStyle.Render(" start"))
-	items = append(items, keyStyle.Render("x")+descStyle.Render(" stop"))
-	items = append(items, keyStyle.Render("d")+descStyle.Render(" delete"))
-	items = append(items, keyStyle.Render("c")+descStyle.Render(" color"))
-	items = append(items, keyStyle.Render("g")+descStyle.Render(" group"))
-	items = append(items, keyStyle.Render("G")+descStyle.Render(" assign"))
+	// P2: Common actions
+	p2 := []string{
+		keyStyle.Render("s") + descStyle.Render(" start"),
+		keyStyle.Render("x") + descStyle.Render(" stop"),
+		keyStyle.Render("d") + descStyle.Render(" delete"),
+		keyStyle.Render("p") + descStyle.Render(" prompt"),
+	}
 
-	// Compact toggle
+	// P3: Less common
+	p3 := []string{
+		keyStyle.Render("r") + descStyle.Render(" resume"),
+		keyStyle.Render("e") + descStyle.Render(" rename"),
+		keyStyle.Render("c") + descStyle.Render(" color"),
+	}
+
+	// P4: Group management
+	p4 := []string{
+		keyStyle.Render("g") + descStyle.Render(" group"),
+		keyStyle.Render("G") + descStyle.Render(" assign"),
+	}
+
+	// P5: Toggles
 	compactStatus := offStyle.Render("OFF")
 	if m.compactList {
 		compactStatus = onStyle.Render("ON")
 	}
-	items = append(items, keyStyle.Render("l")+descStyle.Render(" compact ")+compactStatus)
-
-	// Status lines toggle
 	statusLinesStatus := onStyle.Render("ON")
 	if m.hideStatusLines {
 		statusLinesStatus = offStyle.Render("OFF")
 	}
-	items = append(items, keyStyle.Render("t")+descStyle.Render(" status ")+statusLinesStatus)
-
-	// Auto-yes toggle
 	autoYesStatus := offStyle.Render("OFF")
 	if m.autoYes {
 		autoYesStatus = onStyle.Render("ON")
 	}
-	items = append(items, keyStyle.Render("y")+descStyle.Render(" autoyes ")+autoYesStatus)
+	p5 := []string{
+		keyStyle.Render("l") + descStyle.Render(" compact ") + compactStatus,
+		keyStyle.Render("t") + descStyle.Render(" status ") + statusLinesStatus,
+		keyStyle.Render("y") + descStyle.Render(" autoyes ") + autoYesStatus,
+	}
 
-	items = append(items, keyStyle.Render("?")+descStyle.Render(" help"))
-	items = append(items, keyStyle.Render("q")+descStyle.Render(" quit"))
+	// Calculate widths and determine what fits
+	sepWidth := 3 // " │ "
+
+	// Try adding priority groups until it doesn't fit
+	var items []string
+	items = append(items, p1...)
+
+	testWidth := func(newItems []string) int {
+		total := 0
+		for i, item := range newItems {
+			total += len(stripANSI(item))
+			if i < len(newItems)-1 {
+				total += sepWidth
+			}
+		}
+		return total
+	}
+
+	availableWidth := m.width - 4 // margin
+
+	// Add P2 if fits
+	testItems := append(items, p2...)
+	if testWidth(testItems) <= availableWidth {
+		items = testItems
+		// Add P3 if fits
+		testItems = append(items, p3...)
+		if testWidth(testItems) <= availableWidth {
+			items = testItems
+			// Add P4 if fits
+			testItems = append(items, p4...)
+			if testWidth(testItems) <= availableWidth {
+				items = testItems
+				// Add P5 if fits
+				testItems = append(items, p5...)
+				if testWidth(testItems) <= availableWidth {
+					items = testItems
+				}
+			}
+		}
+	}
 
 	statusText := strings.Join(items, sep)
 
