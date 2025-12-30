@@ -14,15 +14,24 @@ type Storage struct {
 
 // Group represents a session group for organizing sessions
 type Group struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Collapsed bool   `json:"collapsed"`
-	Color     string `json:"color,omitempty"` // Group name color
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Collapsed    bool   `json:"collapsed"`
+	Color        string `json:"color,omitempty"`          // Group name color
+	BgColor      string `json:"bg_color,omitempty"`       // Background color
+	FullRowColor bool   `json:"full_row_color,omitempty"` // Extend background to full row
+}
+
+// Settings stores UI preferences
+type Settings struct {
+	CompactList     bool `json:"compact_list"`
+	HideStatusLines bool `json:"hide_status_lines"`
 }
 
 type StorageData struct {
 	Instances []*Instance `json:"instances"`
 	Groups    []*Group    `json:"groups,omitempty"`
+	Settings  *Settings   `json:"settings,omitempty"`
 }
 
 func NewStorage() (*Storage, error) {
@@ -46,19 +55,25 @@ func (s *Storage) Load() ([]*Instance, error) {
 	return instances, err
 }
 
-// LoadAll loads both instances and groups
+// LoadAll loads instances, groups, and settings
 func (s *Storage) LoadAll() ([]*Instance, []*Group, error) {
+	instances, groups, _, err := s.LoadAllWithSettings()
+	return instances, groups, err
+}
+
+// LoadAllWithSettings loads instances, groups, and settings
+func (s *Storage) LoadAllWithSettings() ([]*Instance, []*Group, *Settings, error) {
 	data, err := os.ReadFile(s.configPath)
 	if os.IsNotExist(err) {
-		return []*Instance{}, []*Group{}, nil
+		return []*Instance{}, []*Group{}, &Settings{}, nil
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read config file: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
 	var storageData StorageData
 	if err := json.Unmarshal(data, &storageData); err != nil {
-		return nil, nil, fmt.Errorf("failed to parse config file: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
 	// Update status for all instances
@@ -70,19 +85,36 @@ func (s *Storage) LoadAll() ([]*Instance, []*Group, error) {
 		storageData.Groups = []*Group{}
 	}
 
-	return storageData.Instances, storageData.Groups, nil
+	if storageData.Settings == nil {
+		storageData.Settings = &Settings{}
+	}
+
+	return storageData.Instances, storageData.Groups, storageData.Settings, nil
 }
 
 func (s *Storage) Save(instances []*Instance) error {
-	_, groups, _ := s.LoadAll()
-	return s.SaveWithGroups(instances, groups)
+	_, groups, settings, _ := s.LoadAllWithSettings()
+	return s.SaveAll(instances, groups, settings)
 }
 
-// SaveWithGroups saves both instances and groups
+// SaveWithGroups saves instances and groups (preserves settings)
 func (s *Storage) SaveWithGroups(instances []*Instance, groups []*Group) error {
+	_, _, settings, _ := s.LoadAllWithSettings()
+	return s.SaveAll(instances, groups, settings)
+}
+
+// SaveSettings saves only the settings (preserves instances and groups)
+func (s *Storage) SaveSettings(settings *Settings) error {
+	instances, groups, _, _ := s.LoadAllWithSettings()
+	return s.SaveAll(instances, groups, settings)
+}
+
+// SaveAll saves instances, groups, and settings
+func (s *Storage) SaveAll(instances []*Instance, groups []*Group, settings *Settings) error {
 	storageData := StorageData{
 		Instances: instances,
 		Groups:    groups,
+		Settings:  settings,
 	}
 
 	data, err := json.MarshalIndent(storageData, "", "  ")
@@ -185,15 +217,6 @@ func (s *Storage) GetInstanceByName(name string) (*Instance, error) {
 	return nil, fmt.Errorf("instance not found")
 }
 
-// SaveAll saves all instances (preserving order) - used for reordering
-func (s *Storage) SaveAll(instances []*Instance) error {
-	return s.Save(instances)
-}
-
-// SaveAllWithGroups saves all instances and groups
-func (s *Storage) SaveAllWithGroups(instances []*Instance, groups []*Group) error {
-	return s.SaveWithGroups(instances, groups)
-}
 
 // GetGroups returns all groups
 func (s *Storage) GetGroups() ([]*Group, error) {

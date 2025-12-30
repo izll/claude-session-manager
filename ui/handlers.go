@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -26,7 +27,7 @@ func (m *Model) handleMoveSessionUp() {
 			groupIdx := m.findGroupIndex(currentItem.group.ID)
 			if groupIdx > 0 {
 				m.groups[groupIdx], m.groups[groupIdx-1] = m.groups[groupIdx-1], m.groups[groupIdx]
-				m.storage.SaveAllWithGroups(m.instances, m.groups)
+				m.storage.SaveWithGroups(m.instances, m.groups)
 				m.buildVisibleItems()
 				// Find new cursor position
 				for i, item := range m.visibleItems {
@@ -50,7 +51,7 @@ func (m *Model) handleMoveSessionUp() {
 		if currentIdx >= 0 && prevIdx >= 0 {
 			m.instances[currentIdx], m.instances[prevIdx] = m.instances[prevIdx], m.instances[currentIdx]
 			m.cursor--
-			m.storage.SaveAll(m.instances)
+			m.storage.Save(m.instances)
 		}
 		return
 	}
@@ -59,7 +60,7 @@ func (m *Model) handleMoveSessionUp() {
 	if m.cursor > 0 && len(m.instances) > 1 {
 		m.instances[m.cursor], m.instances[m.cursor-1] = m.instances[m.cursor-1], m.instances[m.cursor]
 		m.cursor--
-		m.storage.SaveAll(m.instances)
+		m.storage.Save(m.instances)
 	}
 }
 
@@ -79,7 +80,7 @@ func (m *Model) handleMoveSessionDown() {
 			groupIdx := m.findGroupIndex(currentItem.group.ID)
 			if groupIdx >= 0 && groupIdx < len(m.groups)-1 {
 				m.groups[groupIdx], m.groups[groupIdx+1] = m.groups[groupIdx+1], m.groups[groupIdx]
-				m.storage.SaveAllWithGroups(m.instances, m.groups)
+				m.storage.SaveWithGroups(m.instances, m.groups)
 				m.buildVisibleItems()
 				// Find new cursor position
 				for i, item := range m.visibleItems {
@@ -103,7 +104,7 @@ func (m *Model) handleMoveSessionDown() {
 		if currentIdx >= 0 && nextIdx >= 0 {
 			m.instances[currentIdx], m.instances[nextIdx] = m.instances[nextIdx], m.instances[currentIdx]
 			m.cursor++
-			m.storage.SaveAll(m.instances)
+			m.storage.Save(m.instances)
 		}
 		return
 	}
@@ -112,7 +113,7 @@ func (m *Model) handleMoveSessionDown() {
 	if m.cursor < len(m.instances)-1 {
 		m.instances[m.cursor], m.instances[m.cursor+1] = m.instances[m.cursor+1], m.instances[m.cursor]
 		m.cursor++
-		m.storage.SaveAll(m.instances)
+		m.storage.Save(m.instances)
 	}
 }
 
@@ -143,20 +144,23 @@ func (m *Model) handleEnterSession() tea.Cmd {
 		return nil
 	}
 	if inst.Status != session.StatusRunning {
+		// Check if command exists before starting
+		if err := session.CheckAgentCommand(inst); err != nil {
+			m.err = err
+			m.state = stateError
+			return nil
+		}
 		if err := inst.Start(); err != nil {
 			m.err = err
+			m.state = stateError
 			return nil
 		}
 		m.storage.UpdateInstance(inst)
 	}
 	sessionName := inst.TmuxSessionName()
-	// Configure tmux for proper terminal resize following
-	if err := exec.Command("tmux", "set-option", "-t", sessionName, "window-size", "largest").Run(); err != nil {
-		m.err = fmt.Errorf("failed to set tmux window-size: %w", err)
-	}
-	if err := exec.Command("tmux", "set-option", "-t", sessionName, "aggressive-resize", "on").Run(); err != nil {
-		m.err = fmt.Errorf("failed to set tmux aggressive-resize: %w", err)
-	}
+	// Configure tmux for proper terminal resize following (ignore errors - non-critical)
+	exec.Command("tmux", "set-option", "-t", sessionName, "window-size", "largest").Run()
+	exec.Command("tmux", "set-option", "-t", sessionName, "aggressive-resize", "on").Run()
 	// Enable focus events for hooks to work
 	exec.Command("tmux", "set-option", "-t", sessionName, "focus-events", "on").Run()
 	// Set up hook to resize window on focus gain (fixes Konsole tab switch issue)
@@ -165,7 +169,6 @@ func (m *Model) handleEnterSession() tea.Cmd {
 	// Set up Ctrl+Q to resize to preview size before detach
 	tmuxWidth, tmuxHeight := m.calculateTmuxDimensions()
 	inst.UpdateDetachBinding(tmuxWidth, tmuxHeight)
-	inst.ClosePty()
 	cmd := exec.Command("tmux", "attach-session", "-t", sessionName)
 	return tea.ExecProcess(cmd, func(err error) tea.Msg {
 		return reattachMsg{}
@@ -198,8 +201,15 @@ func (m *Model) handleStartSession() {
 		return
 	}
 	if inst.Status != session.StatusRunning {
+		// Check if command exists before starting
+		if err := session.CheckAgentCommand(inst); err != nil {
+			m.err = err
+			m.state = stateError
+			return
+		}
 		if err := inst.Start(); err != nil {
 			m.err = err
+			m.state = stateError
 		} else {
 			m.storage.UpdateInstance(inst)
 		}
@@ -241,9 +251,10 @@ func (m *Model) handleColorPicker() {
 	m.previewBg = inst.BgColor
 	m.colorMode = 0
 	m.editingGroup = nil
-	// Find current color index
+	// Find current color index in filtered list
 	m.colorCursor = 0
-	for i, c := range colorOptions {
+	filteredColors := m.getFilteredColorOptions()
+	for i, c := range filteredColors {
 		if c.Color == inst.Color || c.Name == inst.Color {
 			m.colorCursor = i
 			break
@@ -256,10 +267,12 @@ func (m *Model) handleColorPicker() {
 func (m *Model) handleGroupColorPicker(group *session.Group) {
 	m.editingGroup = group
 	m.previewFg = group.Color
-	m.previewBg = ""
+	m.previewBg = group.BgColor
 	m.colorMode = 0
+	// Find current color index in filtered list
 	m.colorCursor = 0
-	for i, c := range colorOptions {
+	filteredColors := m.getFilteredColorOptions()
+	for i, c := range filteredColors {
 		if c.Color == group.Color || c.Name == group.Color {
 			m.colorCursor = i
 			break
@@ -305,6 +318,9 @@ func (m *Model) handleForceResize() {
 
 // handleListKeys handles keyboard input in the main list view
 func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Clear error on any key press
+	m.err = nil
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -362,14 +378,22 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "n":
-		m.state = stateNewPath
-		m.pathInput.SetValue("")
-		m.pathInput.Focus()
-		// Remember current group for new session
+		// Start new session flow: agent selection -> path -> name
+		m.agentCursor = 0
+		m.pendingAgent = session.AgentClaude
 		m.pendingGroupID = m.getCurrentGroupID()
-		return m, textinput.Blink
+		m.state = stateSelectAgent
+		return m, nil
 
 	case "r":
+		// Resume only works for Claude agent
+		if inst := m.getSelectedInstance(); inst != nil {
+			config := inst.GetAgentConfig()
+			if !config.SupportsResume {
+				m.err = fmt.Errorf("resume not supported for %s agent", inst.Agent)
+				return m, nil
+			}
+		}
 		if err := m.handleResumeSession(); err != nil {
 			m.err = err
 		}
@@ -447,9 +471,17 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "l":
 		m.compactList = !m.compactList
+		m.storage.SaveSettings(&session.Settings{
+			CompactList:     m.compactList,
+			HideStatusLines: m.hideStatusLines,
+		})
 
 	case "t":
 		m.hideStatusLines = !m.hideStatusLines
+		m.storage.SaveSettings(&session.Settings{
+			CompactList:     m.compactList,
+			HideStatusLines: m.hideStatusLines,
+		})
 
 	case "p":
 		m.handleSendPrompt()
@@ -554,26 +586,41 @@ func (m Model) handleNewNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
+			// Set agent type and custom command
+			inst.Agent = m.pendingAgent
+			if m.pendingAgent == session.AgentCustom {
+				inst.CustomCommand = m.customCmdInput.Value()
+			}
+
 			// Assign to current group if any
 			if m.pendingGroupID != "" {
 				inst.GroupID = m.pendingGroupID
 			}
 
-			// Check for existing Claude sessions
-			sessions, err := session.ListClaudeSessions(inst.Path)
-			if err != nil {
-				// Non-fatal: just continue without session selection
-				sessions = nil
-			}
-			if len(sessions) > 0 {
-				m.pendingInstance = inst
-				m.claudeSessions = sessions
-				m.sessionCursor = 0
-				m.state = stateSelectClaudeSession
+			// Check if the agent command exists before creating session
+			if err := session.CheckAgentCommand(inst); err != nil {
+				m.err = err
+				m.state = stateList
 				return m, nil
 			}
 
-			// No existing sessions, just create new
+			// Check for existing Claude sessions (only for Claude agent)
+			if m.pendingAgent == session.AgentClaude {
+				sessions, err := session.ListClaudeSessions(inst.Path)
+				if err != nil {
+					// Non-fatal: just continue without session selection
+					sessions = nil
+				}
+				if len(sessions) > 0 {
+					m.pendingInstance = inst
+					m.claudeSessions = sessions
+					m.sessionCursor = 0
+					m.state = stateSelectClaudeSession
+					return m, nil
+				}
+			}
+
+			// No existing sessions or non-Claude agent, just create new
 			if err := m.storage.AddInstance(inst); err != nil {
 				m.err = err
 				m.state = stateList
@@ -588,7 +635,21 @@ func (m Model) handleNewNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 
 			m.instances = append(m.instances, inst)
-			m.cursor = len(m.instances) - 1
+
+			// Set cursor to the new instance
+			if len(m.groups) > 0 {
+				// In grouped mode, find the instance in visibleItems
+				m.buildVisibleItems()
+				for i, item := range m.visibleItems {
+					if !item.isGroup && item.instance != nil && item.instance.ID == inst.ID {
+						m.cursor = i
+						break
+					}
+				}
+			} else {
+				m.cursor = len(m.instances) - 1
+			}
+
 			m.state = stateList
 			return m, nil
 		}
@@ -696,7 +757,20 @@ func (m Model) handleSelectSessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 
 			m.instances = append(m.instances, inst)
-			m.cursor = len(m.instances) - 1
+
+			// Set cursor to the new instance
+			if len(m.groups) > 0 {
+				m.buildVisibleItems()
+				for i, item := range m.visibleItems {
+					if !item.isGroup && item.instance != nil && item.instance.ID == inst.ID {
+						m.cursor = i
+						break
+					}
+				}
+			} else {
+				m.cursor = len(m.instances) - 1
+			}
+
 			m.pendingInstance = nil
 		} else if inst := m.getSelectedInstance(); inst != nil {
 			// Resuming existing instance
@@ -818,8 +892,9 @@ func (m Model) handleColorPickerKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "tab":
 		// Save current preview before switching
-		if m.colorCursor < len(colorOptions) {
-			selected := colorOptions[m.colorCursor]
+		currentFiltered := m.getFilteredColorOptions()
+		if m.colorCursor < len(currentFiltered) {
+			selected := currentFiltered[m.colorCursor]
 			if m.colorMode == 0 {
 				m.previewFg = selected.Color
 			} else {
@@ -828,20 +903,21 @@ func (m Model) handleColorPickerKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// Switch between foreground and background mode
 		m.colorMode = 1 - m.colorMode
-		// Find cursor position for the other mode's current value
+		// Find cursor position for the other mode's current value in filtered list
 		m.colorCursor = 0
 		targetColor := m.previewFg
 		if m.colorMode == 1 {
 			targetColor = m.previewBg
 		}
-		for i, c := range colorOptions {
+		filteredColors := m.getFilteredColorOptions()
+		for i, c := range filteredColors {
 			if c.Color == targetColor {
 				m.colorCursor = i
 				break
 			}
 		}
 		// Reset cursor if it's beyond the new max
-		if m.colorCursor >= maxItems {
+		if m.colorCursor >= len(filteredColors) {
 			m.colorCursor = 0
 		}
 
@@ -875,22 +951,43 @@ func (m Model) handleColorPickerKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "f":
 		// Toggle full row color
-		if inst := m.getSelectedInstance(); inst != nil {
+		if m.editingGroup != nil {
+			m.editingGroup.FullRowColor = !m.editingGroup.FullRowColor
+			m.storage.SaveWithGroups(m.instances, m.groups)
+		} else if inst := m.getSelectedInstance(); inst != nil {
 			inst.FullRowColor = !inst.FullRowColor
 			m.storage.UpdateInstance(inst)
 		}
 
 	case "enter":
-		selected := colorOptions[m.colorCursor]
+		filteredColors := m.getFilteredColorOptions()
+		if m.colorCursor >= len(filteredColors) {
+			return m, nil
+		}
+		selected := filteredColors[m.colorCursor]
 
 		// Editing group color
 		if m.editingGroup != nil {
-			if selected.Color == "" || selected.Color == "none" {
+			// Update preview with current selection
+			if m.colorMode == 0 {
+				m.previewFg = selected.Color
+			} else {
+				m.previewBg = selected.Color
+			}
+
+			// Save both colors
+			if m.previewFg == "" || m.previewFg == "none" {
 				m.editingGroup.Color = ""
 			} else {
-				m.editingGroup.Color = selected.Color
+				m.editingGroup.Color = m.previewFg
 			}
-			m.storage.SaveAllWithGroups(m.instances, m.groups)
+			if m.previewBg == "" || m.previewBg == "none" {
+				m.editingGroup.BgColor = ""
+			} else {
+				m.editingGroup.BgColor = m.previewBg
+			}
+
+			m.storage.SaveWithGroups(m.instances, m.groups)
 			m.editingGroup = nil
 			m.state = stateList
 			m.colorMode = 0
@@ -1029,5 +1126,115 @@ func (m Model) handleSelectGroupKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	return m, nil
+}
+
+// agentTypes defines the available agent types in order
+var agentTypes = []session.AgentType{
+	session.AgentClaude,
+	session.AgentGemini,
+	session.AgentAider,
+	session.AgentCodex,
+	session.AgentAmazonQ,
+	session.AgentOpenCode,
+	session.AgentCustom,
+}
+
+// handleSelectAgentKeys handles keyboard input in the agent selection dialog
+func (m Model) handleSelectAgentKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Clear error on navigation
+	if msg.String() == "up" || msg.String() == "k" || msg.String() == "down" || msg.String() == "j" {
+		m.err = nil
+	}
+
+	switch msg.String() {
+	case "esc":
+		m.err = nil
+		m.state = stateList
+		return m, nil
+
+	case "up", "k":
+		if m.agentCursor > 0 {
+			m.agentCursor--
+		}
+
+	case "down", "j":
+		if m.agentCursor < len(agentTypes)-1 {
+			m.agentCursor++
+		}
+
+	case "enter":
+		m.pendingAgent = agentTypes[m.agentCursor]
+
+		// If custom agent, ask for command first (can't check yet)
+		if m.pendingAgent == session.AgentCustom {
+			m.err = nil
+			m.customCmdInput.SetValue("")
+			m.customCmdInput.Focus()
+			m.state = stateCustomCmd
+			return m, textinput.Blink
+		}
+
+		// Check if the agent command exists
+		config := session.AgentConfigs[m.pendingAgent]
+		if _, err := exec.LookPath(config.Command); err != nil {
+			m.err = fmt.Errorf("'%s' not found - is it installed?", config.Command)
+			return m, nil
+		}
+
+		// Command exists, proceed to path input
+		m.err = nil
+		m.pathInput.SetValue("")
+		m.pathInput.Focus()
+		m.state = stateNewPath
+		return m, textinput.Blink
+	}
+
+	return m, nil
+}
+
+// handleCustomCmdKeys handles keyboard input in the custom command dialog
+func (m Model) handleCustomCmdKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.err = nil
+		m.state = stateSelectAgent
+		return m, nil
+
+	case "enter":
+		if m.customCmdInput.Value() != "" {
+			// Check if the command exists
+			parts := strings.Fields(m.customCmdInput.Value())
+			if len(parts) > 0 {
+				if _, err := exec.LookPath(parts[0]); err != nil {
+					m.err = fmt.Errorf("'%s' not found - is it installed?", parts[0])
+					return m, nil
+				}
+			}
+
+			// Command exists, proceed to path input
+			m.err = nil
+			m.pathInput.SetValue("")
+			m.pathInput.Focus()
+			m.state = stateNewPath
+			return m, textinput.Blink
+		}
+	}
+
+	// Clear error when typing
+	m.err = nil
+
+	var cmd tea.Cmd
+	m.customCmdInput, cmd = m.customCmdInput.Update(msg)
+	return m, cmd
+}
+
+// handleErrorKeys handles keyboard input in the error overlay
+func (m Model) handleErrorKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "enter", "q":
+		m.err = nil
+		m.state = stateList
+	}
 	return m, nil
 }

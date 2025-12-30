@@ -9,6 +9,15 @@ import (
 	"github.com/izll/claude-session-manager/session"
 )
 
+// truncateRunes truncates a string to maxLen runes and adds ellipsis if needed
+func truncateRunes(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen-1]) + "…"
+}
+
 // View implements tea.Model and renders the current UI state.
 // It returns different views based on the current application state.
 func (m Model) View() string {
@@ -33,6 +42,12 @@ func (m Model) View() string {
 		return m.renameGroupView()
 	case stateSelectGroup:
 		return m.selectGroupView()
+	case stateSelectAgent:
+		return m.selectAgentView()
+	case stateCustomCmd:
+		return m.customCmdView()
+	case stateError:
+		return m.errorView()
 	default:
 		return m.listView()
 	}
@@ -69,9 +84,15 @@ func (m Model) listView() string {
 	var b strings.Builder
 	b.WriteString(content)
 
-	// Error display
-	if m.err != nil {
-		b.WriteString(errorStyle.Render(fmt.Sprintf(" Error: %v\n", m.err)))
+	// Error display - only show in list state (dialogs show their own errors)
+	if m.err != nil && m.state == stateList {
+		errBox := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(lipgloss.Color("#FF0000")).
+			Bold(true).
+			Padding(0, 2).
+			Render(fmt.Sprintf(" ⚠ Error: %v ", m.err))
+		b.WriteString("\n" + errBox + "\n")
 	}
 
 	// Status bar
@@ -349,8 +370,8 @@ func (m Model) selectSessionView() string {
 		if m.width > 40 {
 			maxPromptLen = m.width - 40
 		}
-		if len(prompt) > maxPromptLen {
-			prompt = prompt[:maxPromptLen-3] + "..."
+		if len([]rune(prompt)) > maxPromptLen {
+			prompt = truncateRunes(prompt, maxPromptLen)
 		}
 
 		timeAgo := formatTimeAgo(cs.UpdatedAt)
@@ -398,34 +419,66 @@ func (m Model) colorPickerView() string {
 	if m.editingGroup != nil {
 		group := m.editingGroup
 
-		// Get preview color
+		// Get preview colors (current cursor selection for active mode)
 		previewFg := m.previewFg
-		if m.colorCursor < len(colorOptions) {
-			selected := colorOptions[m.colorCursor]
-			previewFg = selected.Color
+		previewBg := m.previewBg
+		filteredColors := m.getFilteredColorOptions()
+		if m.colorCursor < len(filteredColors) {
+			selected := filteredColors[m.colorCursor]
+			if m.colorMode == 0 {
+				previewFg = selected.Color
+			} else {
+				previewBg = selected.Color
+			}
 		}
 
-		// Show group name with preview color
+		// Show group name with preview colors
 		styledName := group.Name
-		if previewFg != "" {
-			nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(previewFg)).Bold(true)
-			styledName = nameStyle.Render(group.Name)
+		nameStyle := lipgloss.NewStyle().Bold(true)
+		hasBg := previewBg != "" && previewBg != "none"
+		if hasBg {
+			nameStyle = nameStyle.Background(lipgloss.Color(previewBg))
 		}
+		if previewFg != "" && previewFg != "none" && previewFg != "auto" {
+			nameStyle = nameStyle.Foreground(lipgloss.Color(previewFg))
+		} else if hasBg {
+			// Auto or empty foreground with background - use contrast
+			nameStyle = nameStyle.Foreground(lipgloss.Color(getContrastColor(previewBg)))
+		}
+		styledName = nameStyle.Render(group.Name)
 
 		b.WriteString(fmt.Sprintf("  Group: 📁 %s\n", styledName))
 
-		// Show current color
+		// Show current colors
 		fgDisplay := "none"
 		if group.Color != "" {
 			fgDisplay = group.Color
 		}
-		b.WriteString(fmt.Sprintf("  Szín: %s\n\n", fgDisplay))
+		bgDisplay := "none"
+		if group.BgColor != "" {
+			bgDisplay = group.BgColor
+		}
+		fullRowDisplay := "OFF"
+		if group.FullRowColor {
+			fullRowDisplay = "ON"
+		}
+
+		// Highlight active mode
+		if m.colorMode == 0 {
+			b.WriteString(fmt.Sprintf("  [Text: %s]  Background: %s\n", fgDisplay, bgDisplay))
+		} else {
+			b.WriteString(fmt.Sprintf("   Text: %s  [Background: %s]\n", fgDisplay, bgDisplay))
+		}
+		b.WriteString(fmt.Sprintf("  Full row: %s (f)\n", fullRowDisplay))
+		b.WriteString(dimStyle.Render("  TAB: switch | f: full row"))
+		b.WriteString("\n\n")
 	} else if inst := m.getSelectedInstance(); inst != nil {
 		// Get preview colors (current cursor selection for active mode)
 		previewFg := m.previewFg
 		previewBg := m.previewBg
-		if m.colorCursor < len(colorOptions) {
-			selected := colorOptions[m.colorCursor]
+		filteredColors := m.getFilteredColorOptions()
+		if m.colorCursor < len(filteredColors) {
+			selected := filteredColors[m.colorCursor]
 			if m.colorMode == 0 {
 				previewFg = selected.Color
 			} else {
@@ -476,12 +529,12 @@ func (m Model) colorPickerView() string {
 
 		// Highlight active mode
 		if m.colorMode == 0 {
-			b.WriteString(fmt.Sprintf("  [Szöveg: %s]  Háttér: %s\n", fgDisplay, bgDisplay))
+			b.WriteString(fmt.Sprintf("  [Text: %s]  Background: %s\n", fgDisplay, bgDisplay))
 		} else {
-			b.WriteString(fmt.Sprintf("   Szöveg: %s  [Háttér: %s]\n", fgDisplay, bgDisplay))
+			b.WriteString(fmt.Sprintf("   Text: %s  [Background: %s]\n", fgDisplay, bgDisplay))
 		}
-		b.WriteString(fmt.Sprintf("  Teljes sor: %s (f)\n", fullRowDisplay))
-		b.WriteString(dimStyle.Render("  TAB: váltás | f: teljes sor"))
+		b.WriteString(fmt.Sprintf("  Full row: %s (f)\n", fullRowDisplay))
+		b.WriteString(dimStyle.Render("  TAB: switch | f: full row"))
 		b.WriteString("\n\n")
 	}
 
@@ -508,13 +561,11 @@ func (m Model) colorPickerView() string {
 		b.WriteString(dimStyle.Render(fmt.Sprintf("  ↑ %d more\n", startIdx)))
 	}
 
-	for i := startIdx; i < endIdx; i++ {
-		c := colorOptions[i]
+	// Get filtered list of color options for current mode
+	filteredOptions := m.getFilteredColorOptions()
 
-		// Skip "auto" for background mode
-		if m.colorMode == 1 && c.Color == "auto" {
-			continue
-		}
+	for displayIdx := startIdx; displayIdx < endIdx && displayIdx < len(filteredOptions); displayIdx++ {
+		c := filteredOptions[displayIdx]
 
 		// Create color preview
 		var colorPreview string
@@ -543,7 +594,7 @@ func (m Model) colorPickerView() string {
 			}
 		}
 
-		if i == m.colorCursor {
+		if displayIdx == m.colorCursor {
 			b.WriteString(fmt.Sprintf("  ❯%s\n", colorPreview))
 		} else {
 			b.WriteString(fmt.Sprintf("   %s\n", colorPreview))
@@ -768,10 +819,7 @@ func (m Model) getLastLine(inst *session.Instance) string {
 	if maxLen < 10 {
 		maxLen = 10
 	}
-	if len(cleanLine) > maxLen {
-		return cleanLine[:maxLen-3] + "..."
-	}
-	return cleanLine
+	return truncateRunes(cleanLine, maxLen)
 }
 
 // buildSessionListPane builds the left pane containing the session list
@@ -905,10 +953,19 @@ func (m Model) renderGroupRow(group *session.Group, index int, listWidth int) st
 
 	// Group style - use custom color if set, otherwise default purple
 	groupColor := "#7D56F4"
-	if group.Color != "" {
+	if group.Color != "" && group.Color != "auto" {
 		groupColor = group.Color
 	}
 	groupStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(groupColor)).Bold(true)
+
+	// Apply background color if set
+	if group.BgColor != "" {
+		groupStyle = groupStyle.Background(lipgloss.Color(group.BgColor))
+		// Auto-contrast if no custom foreground or auto
+		if group.Color == "" || group.Color == "auto" {
+			groupStyle = groupStyle.Foreground(lipgloss.Color(getContrastColor(group.BgColor)))
+		}
+	}
 
 	name := group.Name
 	maxNameLen := listWidth - 12
@@ -917,17 +974,34 @@ func (m Model) renderGroupRow(group *session.Group, index int, listWidth int) st
 	}
 
 	selected := index == m.cursor
-	if selected {
-		row.WriteString(fmt.Sprintf(" %s 📁%s %s [%d]\n",
+	// Style both name and count together
+	nameAndCount := fmt.Sprintf("%s [%d]", name, sessionCount)
+	styledContent := groupStyle.Render(nameAndCount)
+
+	// Full row background - only the name and count, not icons
+	if group.FullRowColor && group.BgColor != "" {
+		// Calculate remaining width for the colored part (after prefix + icons)
+		prefixLen := 7 // "   📁▼ " or " ▸ 📁▼ "
+		contentWidth := listWidth - prefixLen
+		fullRowStyle := lipgloss.NewStyle().Background(lipgloss.Color(group.BgColor)).Width(contentWidth)
+		if selected {
+			row.WriteString(fmt.Sprintf(" %s 📁%s ", listSelectedStyle.Render("▸"), collapseIcon))
+			row.WriteString(fullRowStyle.Render(styledContent))
+			row.WriteString("\n")
+		} else {
+			row.WriteString(fmt.Sprintf("   📁%s ", collapseIcon))
+			row.WriteString(fullRowStyle.Render(styledContent))
+			row.WriteString("\n")
+		}
+	} else if selected {
+		row.WriteString(fmt.Sprintf(" %s 📁%s %s\n",
 			listSelectedStyle.Render("▸"),
 			collapseIcon,
-			groupStyle.Render(name),
-			sessionCount))
+			styledContent))
 	} else {
-		row.WriteString(fmt.Sprintf("   📁%s %s [%d]\n",
+		row.WriteString(fmt.Sprintf("   📁%s %s\n",
 			collapseIcon,
-			groupStyle.Render(name),
-			sessionCount))
+			styledContent))
 	}
 
 	if !m.compactList {
@@ -1085,6 +1159,31 @@ func (m Model) buildPreviewPane(contentHeight int) string {
 	// Instance info
 	rightPane.WriteString(dimStyle.Render(fmt.Sprintf("  Path: %s", inst.Path)))
 	rightPane.WriteString("\n")
+
+	// Show agent type
+	agentName := "Claude Code"
+	switch inst.Agent {
+	case session.AgentGemini:
+		agentName = "Gemini"
+	case session.AgentAider:
+		agentName = "Aider"
+	case session.AgentCodex:
+		agentName = "Codex CLI"
+	case session.AgentAmazonQ:
+		agentName = "Amazon Q"
+	case session.AgentOpenCode:
+		agentName = "OpenCode"
+	case session.AgentCustom:
+		agentName = "Custom"
+	}
+	rightPane.WriteString(dimStyle.Render(fmt.Sprintf("  Agent: %s", agentName)))
+	rightPane.WriteString("\n")
+
+	if inst.Agent == session.AgentCustom && inst.CustomCommand != "" {
+		rightPane.WriteString(dimStyle.Render(fmt.Sprintf("  Command: %s", inst.CustomCommand)))
+		rightPane.WriteString("\n")
+	}
+
 	if inst.ResumeSessionID != "" {
 		rightPane.WriteString(dimStyle.Render(fmt.Sprintf("  Resume: %s", inst.ResumeSessionID[:8])))
 		rightPane.WriteString("\n")
@@ -1282,4 +1381,101 @@ func (m *Model) selectGroupView() string {
 	boxContent.WriteString("\n")
 
 	return m.renderOverlayDialog(" Assign to Group ", boxContent.String(), 50, "#7D56F4")
+}
+
+// selectAgentView renders the agent type selection dialog as an overlay
+func (m Model) selectAgentView() string {
+	var boxContent strings.Builder
+	boxContent.WriteString("\n")
+	boxContent.WriteString("  Select Agent Type:\n\n")
+
+	// Agent options with descriptions
+	agents := []struct {
+		agent session.AgentType
+		icon  string
+		name  string
+		desc  string
+	}{
+		{session.AgentClaude, "🤖", "Claude Code", "Anthropic CLI (resume, auto-yes)"},
+		{session.AgentGemini, "✨", "Gemini", "Google AI CLI"},
+		{session.AgentAider, "🔧", "Aider", "AI pair programming (auto-yes)"},
+		{session.AgentCodex, "🧠", "Codex CLI", "OpenAI coding agent (auto-yes)"},
+		{session.AgentAmazonQ, "📦", "Amazon Q", "AWS AI assistant (auto-yes)"},
+		{session.AgentOpenCode, "💻", "OpenCode", "Terminal AI assistant"},
+		{session.AgentCustom, "⚙️", "Custom", "Custom command"},
+	}
+
+	for i, a := range agents {
+		if m.agentCursor == i {
+			boxContent.WriteString(fmt.Sprintf("  ❯ %s %s\n", a.icon, a.name))
+			boxContent.WriteString(dimStyle.Render(fmt.Sprintf("       %s", a.desc)))
+			boxContent.WriteString("\n")
+		} else {
+			boxContent.WriteString(fmt.Sprintf("    %s %s\n", a.icon, a.name))
+		}
+	}
+
+	// Show error if any
+	if m.err != nil {
+		boxContent.WriteString("\n")
+		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Bold(true)
+		boxContent.WriteString(errStyle.Render(fmt.Sprintf("  ⚠ %v", m.err)))
+		boxContent.WriteString("\n")
+	}
+
+	boxContent.WriteString("\n")
+	boxContent.WriteString(helpStyle.Render("  enter: select  esc: cancel"))
+	boxContent.WriteString("\n")
+
+	return m.renderOverlayDialog(" New Session ", boxContent.String(), 50, "#7D56F4")
+}
+
+// customCmdView renders the custom command input dialog as an overlay
+func (m Model) customCmdView() string {
+	var boxContent strings.Builder
+	boxContent.WriteString("\n")
+	boxContent.WriteString("  Enter the command to run:\n\n")
+	boxContent.WriteString("  " + m.customCmdInput.View() + "\n")
+	boxContent.WriteString("\n")
+	boxContent.WriteString(dimStyle.Render("  Example: aider --model gpt-4"))
+
+	// Show error if any
+	if m.err != nil {
+		boxContent.WriteString("\n\n")
+		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Bold(true)
+		boxContent.WriteString(errStyle.Render(fmt.Sprintf("  ⚠ %v", m.err)))
+	}
+
+	boxContent.WriteString("\n\n")
+	boxContent.WriteString(helpStyle.Render("  enter: confirm  esc: back"))
+	boxContent.WriteString("\n")
+
+	boxWidth := 60
+	if m.width > 80 {
+		boxWidth = m.width / 2
+	}
+	if boxWidth > 80 {
+		boxWidth = 80
+	}
+
+	return m.renderOverlayDialog(" Custom Command ", boxContent.String(), boxWidth, "#7D56F4")
+}
+
+// errorView renders the error overlay dialog
+func (m Model) errorView() string {
+	var boxContent strings.Builder
+	boxContent.WriteString("\n")
+
+	errMsg := "Unknown error"
+	if m.err != nil {
+		errMsg = m.err.Error()
+	}
+
+	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555"))
+	boxContent.WriteString(errStyle.Render(fmt.Sprintf("  %s", errMsg)))
+	boxContent.WriteString("\n\n")
+	boxContent.WriteString(helpStyle.Render("  Press any key to close"))
+	boxContent.WriteString("\n")
+
+	return m.renderOverlayDialog(" Error ", boxContent.String(), 60, "#FF5555")
 }

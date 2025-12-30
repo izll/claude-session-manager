@@ -27,7 +27,8 @@ const (
 	GradientColorCount   = 15  // Number of gradient options (for background exclusion)
 	PromptMinWidth       = 50  // Minimum prompt input width
 	PromptMaxWidth       = 70  // Maximum prompt input width
-	TickInterval         = 100 * time.Millisecond // UI refresh interval
+	TickInterval         = 100 * time.Millisecond // UI refresh interval for selected
+	SlowTickInterval     = 500 * time.Millisecond // UI refresh interval for others
 )
 
 // state represents the current UI state
@@ -42,10 +43,13 @@ const (
 	stateRename
 	stateHelp
 	stateColorPicker
-	statePrompt      // Send text to session
-	stateNewGroup    // Creating new group
-	stateRenameGroup // Renaming a group
-	stateSelectGroup // Assigning session to group
+	statePrompt       // Send text to session
+	stateNewGroup     // Creating new group
+	stateRenameGroup  // Renaming a group
+	stateSelectGroup  // Assigning session to group
+	stateSelectAgent  // Selecting agent type for new session
+	stateCustomCmd    // Entering custom command
+	stateError        // Showing error overlay
 )
 
 // Model represents the main TUI application state for Claude Session Manager.
@@ -83,6 +87,10 @@ type Model struct {
 	visibleItems    []visibleItem             // Flattened list of visible items (groups + sessions)
 	pendingGroupID  string                    // Group ID for new session creation
 	editingGroup    *session.Group            // Group being edited in color picker (nil = editing session)
+	agentCursor     int                       // Cursor for agent selection
+	pendingAgent    session.AgentType         // Agent type for new session
+	customCmdInput  textinput.Model           // Input for custom command
+	tickCount       int                       // Counter for slow tick (update others every 5th tick)
 }
 
 // visibleItem represents an item in the flattened list view (group header or session)
@@ -107,7 +115,7 @@ func NewModel() (Model, error) {
 		return Model{}, err
 	}
 
-	instances, groups, err := storage.LoadAll()
+	instances, groups, settings, err := storage.LoadAllWithSettings()
 	if err != nil {
 		return Model{}, err
 	}
@@ -130,27 +138,30 @@ func NewModel() (Model, error) {
 	groupInput.Placeholder = "Group name"
 	groupInput.CharLimit = 50
 
+	customCmdInput := textinput.New()
+	customCmdInput.Placeholder = "command --flags"
+	customCmdInput.CharLimit = 500
+
 	m := Model{
-		instances:   instances,
-		storage:     storage,
-		state:       stateList,
-		nameInput:   nameInput,
-		pathInput:   pathInput,
-		promptInput: promptInput,
-		groupInput:  groupInput,
-		groups:      groups,
-		lastLines:   make(map[string]string),
-		prevContent: make(map[string]string),
-		isActive:    make(map[string]bool),
+		instances:       instances,
+		storage:         storage,
+		state:           stateList,
+		nameInput:       nameInput,
+		pathInput:       pathInput,
+		promptInput:     promptInput,
+		groupInput:      groupInput,
+		customCmdInput:  customCmdInput,
+		groups:          groups,
+		lastLines:       make(map[string]string),
+		prevContent:     make(map[string]string),
+		isActive:        make(map[string]bool),
+		compactList:     settings.CompactList,
+		hideStatusLines: settings.HideStatusLines,
 	}
 
 	// Initialize status and last lines for all instances
 	for _, inst := range instances {
 		inst.UpdateStatus()
-		// Ensure PTY connection for running instances (for size control)
-		if inst.Status == session.StatusRunning {
-			inst.EnsurePty()
-		}
 		m.lastLines[inst.ID] = inst.GetLastLine()
 	}
 
@@ -259,6 +270,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleRenameGroupKeys(msg)
 		case stateSelectGroup:
 			return m.handleSelectGroupKeys(msg)
+		case stateSelectAgent:
+			return m.handleSelectAgentKeys(msg)
+		case stateCustomCmd:
+			return m.handleCustomCmdKeys(msg)
+		case stateError:
+			return m.handleErrorKeys(msg)
 		}
 	}
 
@@ -278,16 +295,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.groupInput, cmd = m.groupInput.Update(msg)
 		cmds = append(cmds, cmd)
 	}
+	if m.state == stateCustomCmd {
+		m.customCmdInput, cmd = m.customCmdInput.Update(msg)
+		cmds = append(cmds, cmd)
+	}
 
 	return m, tea.Batch(cmds...)
 }
 
 // handleTick processes tick messages for periodic UI updates
 func (m Model) handleTick() (tea.Model, tea.Cmd) {
-	// Update all instance statuses and last lines
+	// Skip heavy processing during dialogs - only update in list view
+	if m.state != stateList {
+		return m, tickCmd()
+	}
+
+	m.tickCount++
+	slowTick := m.tickCount%5 == 0 // Every 5th tick (500ms) for non-selected
+
+	selectedInst := m.getSelectedInstance()
+
+	// Update instance statuses and last lines
 	for _, inst := range m.instances {
+		// Only update non-selected instances on slow tick
+		isSelected := selectedInst != nil && inst.ID == selectedInst.ID
+		if !isSelected && !slowTick {
+			continue
+		}
+
 		inst.UpdateStatus()
-		// Update last line for status display
 		currentLine := inst.GetLastLine()
 		m.lastLines[inst.ID] = currentLine
 
@@ -306,7 +342,7 @@ func (m Model) handleTick() (tea.Model, tea.Cmd) {
 	}
 
 	// Update preview for selected instance
-	if selectedInst := m.getSelectedInstance(); selectedInst != nil {
+	if selectedInst != nil {
 		preview, err := selectedInst.GetPreview(PreviewLineCount)
 		if err != nil {
 			m.preview = "(error loading preview)"
@@ -339,12 +375,28 @@ func (m *Model) resizeSelectedPane() {
 	}
 }
 
+// getFilteredColorOptions returns color options filtered for current mode
+func (m *Model) getFilteredColorOptions() []ColorOption {
+	var filtered []ColorOption
+	for _, c := range colorOptions {
+		if m.colorMode == 1 {
+			// Skip gradients for background mode
+			if _, isGradient := gradients[c.Color]; isGradient {
+				continue
+			}
+			// Skip "auto" for background mode
+			if c.Color == "auto" {
+				continue
+			}
+		}
+		filtered = append(filtered, c)
+	}
+	return filtered
+}
+
 // getMaxColorItems returns the maximum number of color options based on current mode
 func (m *Model) getMaxColorItems() int {
-	if m.colorMode == 1 {
-		return len(colorOptions) - GradientColorCount
-	}
-	return len(colorOptions)
+	return len(m.getFilteredColorOptions())
 }
 
 // buildVisibleItems builds the flattened list of visible items (groups + sessions)

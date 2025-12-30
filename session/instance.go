@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/creack/pty"
+	"github.com/izll/claude-session-manager/session/filters"
 )
 
 // ansiRegex matches ANSI escape sequences
@@ -28,6 +28,72 @@ const (
 	StatusStopped Status = "stopped"
 )
 
+// AgentType represents the type of AI agent
+type AgentType string
+
+const (
+	AgentClaude   AgentType = "claude"
+	AgentGemini   AgentType = "gemini"
+	AgentAider    AgentType = "aider"
+	AgentCodex    AgentType = "codex"
+	AgentAmazonQ  AgentType = "amazonq"
+	AgentOpenCode AgentType = "opencode"
+	AgentCustom   AgentType = "custom"
+)
+
+// AgentConfig contains configuration for each agent type
+type AgentConfig struct {
+	Command       string   // Base command to run
+	SupportsResume bool    // Whether agent supports session resume
+	SupportsAutoYes bool   // Whether agent has auto-approve flag
+	AutoYesFlag    string  // The flag for auto-approve (e.g., "--dangerously-skip-permissions")
+	ResumeFlag     string  // The flag for resume (e.g., "--resume")
+}
+
+// AgentConfigs maps agent types to their configurations
+var AgentConfigs = map[AgentType]AgentConfig{
+	AgentClaude: {
+		Command:         "claude",
+		SupportsResume:  true,
+		SupportsAutoYes: true,
+		AutoYesFlag:     "--dangerously-skip-permissions",
+		ResumeFlag:      "--resume",
+	},
+	AgentGemini: {
+		Command:         "gemini",
+		SupportsResume:  false,
+		SupportsAutoYes: false,
+	},
+	AgentAider: {
+		Command:         "aider",
+		SupportsResume:  false,
+		SupportsAutoYes: true,
+		AutoYesFlag:     "--yes",
+	},
+	AgentCodex: {
+		Command:         "codex",
+		SupportsResume:  false,
+		SupportsAutoYes: true,
+		AutoYesFlag:     "--full-auto",
+	},
+	AgentAmazonQ: {
+		Command:         "q",
+		SupportsResume:  false,
+		SupportsAutoYes: true,
+		AutoYesFlag:     "--trust-all-tools",
+	},
+	AgentOpenCode: {
+		Command:         "opencode",
+		SupportsResume:  false,
+		SupportsAutoYes: false,
+	},
+	AgentCustom: {
+		Command:         "",
+		SupportsResume:  false,
+		SupportsAutoYes: false,
+	},
+}
+
 type Instance struct {
 	ID              string    `json:"id"`
 	Name            string    `json:"name"`
@@ -41,9 +107,21 @@ type Instance struct {
 	BgColor         string    `json:"bg_color,omitempty"`          // Background color
 	FullRowColor    bool      `json:"full_row_color,omitempty"`    // Extend background to full row
 	GroupID         string    `json:"group_id,omitempty"`          // Session group ID
+	Agent           AgentType `json:"agent,omitempty"`             // Agent type (claude, gemini, aider, custom)
+	CustomCommand   string    `json:"custom_command,omitempty"`    // Custom command for AgentCustom
 
-	// ptmx is a PTY running tmux attach - used to control pane size while detached
-	ptmx *os.File `json:"-"`
+}
+
+// GetAgentConfig returns the agent configuration for this instance
+func (i *Instance) GetAgentConfig() AgentConfig {
+	agent := i.Agent
+	if agent == "" {
+		agent = AgentClaude // Default to Claude for backward compatibility
+	}
+	if config, ok := AgentConfigs[agent]; ok {
+		return config
+	}
+	return AgentConfigs[AgentClaude]
 }
 
 // expandTilde expands ~ to user's home directory
@@ -100,6 +178,32 @@ func (i *Instance) TmuxSessionName() string {
 	return fmt.Sprintf("csm_%s", i.ID)
 }
 
+// CheckAgentCommand verifies that the agent command exists in PATH
+func CheckAgentCommand(inst *Instance) error {
+	var cmdToCheck string
+
+	if inst.Agent == AgentCustom {
+		// Extract the base command (first word) from custom command
+		parts := strings.Fields(inst.CustomCommand)
+		if len(parts) > 0 {
+			cmdToCheck = parts[0]
+		}
+	} else {
+		config := inst.GetAgentConfig()
+		cmdToCheck = config.Command
+	}
+
+	if cmdToCheck == "" {
+		return fmt.Errorf("no command specified")
+	}
+
+	if _, err := exec.LookPath(cmdToCheck); err != nil {
+		return fmt.Errorf("command '%s' not found - is it installed?", cmdToCheck)
+	}
+
+	return nil
+}
+
 func (i *Instance) Start() error {
 	return i.StartWithResume("")
 }
@@ -116,24 +220,50 @@ func (i *Instance) StartWithResume(resumeID string) error {
 	sessionExists := checkCmd.Run() == nil
 
 	if !sessionExists {
-		// Build claude command
-		claudeArgs := []string{}
-		if i.AutoYes {
-			claudeArgs = append(claudeArgs, "--dangerously-skip-permissions")
+		// Build command based on agent type
+		config := i.GetAgentConfig()
+		var agentCmd string
+		var cmdToCheck string
+
+		if i.Agent == AgentCustom {
+			// Use custom command directly
+			agentCmd = i.CustomCommand
+			// Extract the base command (first word) to check
+			parts := strings.Fields(i.CustomCommand)
+			if len(parts) > 0 {
+				cmdToCheck = parts[0]
+			}
+		} else {
+			cmdToCheck = config.Command
+			args := []string{}
+
+			// Add auto-yes flag if supported and enabled
+			if i.AutoYes && config.SupportsAutoYes && config.AutoYesFlag != "" {
+				args = append(args, config.AutoYesFlag)
+			}
+
+			// Add resume flag if supported and specified (Claude only)
+			if config.SupportsResume && config.ResumeFlag != "" {
+				if resumeID != "" {
+					args = append(args, config.ResumeFlag, resumeID)
+					i.ResumeSessionID = resumeID
+				} else if i.ResumeSessionID != "" {
+					args = append(args, config.ResumeFlag, i.ResumeSessionID)
+				}
+			}
+
+			agentCmd = config.Command + " " + strings.Join(args, " ")
 		}
 
-		// Add resume flag if specified
-		if resumeID != "" {
-			claudeArgs = append(claudeArgs, "--resume", resumeID)
-			i.ResumeSessionID = resumeID
-		} else if i.ResumeSessionID != "" {
-			claudeArgs = append(claudeArgs, "--resume", i.ResumeSessionID)
+		// Check if the command exists
+		if cmdToCheck != "" {
+			if _, err := exec.LookPath(cmdToCheck); err != nil {
+				return fmt.Errorf("command '%s' not found - is it installed?", cmdToCheck)
+			}
 		}
-
-		claudeCmd := "claude " + strings.Join(claudeArgs, " ")
 
 		// Create new tmux session
-		cmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", i.Path, claudeCmd)
+		cmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", i.Path, agentCmd)
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to create tmux session: %w", err)
 		}
@@ -168,11 +298,13 @@ func (i *Instance) StartWithResume(resumeID string) error {
 		exec.Command("tmux", "bind-key", "-T", "copy-mode-vi", "S-PageDown", "send-keys", "-X", "page-down").Run()
 
 		// Ctrl+q will be set up with resize in UpdateDetachBinding
-	}
 
-	// Attach through PTY and keep the handle for size control (like Claude Squad)
-	if err := i.attachPty(); err != nil {
-		return fmt.Errorf("failed to attach PTY: %w", err)
+		// Check if session is still alive after a short delay (detect immediate exit)
+		time.Sleep(300 * time.Millisecond)
+		if !i.IsAlive() {
+			// Session died immediately - try to get output for error message
+			return fmt.Errorf("session exited immediately - check if login or API key is required")
+		}
 	}
 
 	i.Status = StatusRunning
@@ -181,27 +313,9 @@ func (i *Instance) StartWithResume(resumeID string) error {
 	return nil
 }
 
-// attachPty attaches to the tmux session through a PTY and keeps the handle
-func (i *Instance) attachPty() error {
-	sessionName := i.TmuxSessionName()
-	cmd := exec.Command("tmux", "attach-session", "-t", sessionName)
-	ptmx, err := pty.Start(cmd)
-	if err != nil {
-		return err
-	}
-	i.ptmx = ptmx
-	return nil
-}
-
 func (i *Instance) Stop() error {
 	if i.Status != StatusRunning {
 		return nil
-	}
-
-	// Close PTY handle
-	if i.ptmx != nil {
-		i.ptmx.Close()
-		i.ptmx = nil
 	}
 
 	sessionName := i.TmuxSessionName()
@@ -262,24 +376,6 @@ tmux detach-client
 	exec.Command("tmux", "bind-key", "-n", "C-q", "run-shell", shellScript).Run()
 }
 
-// EnsurePty ensures we have a PTY connection (for restored instances)
-func (i *Instance) EnsurePty() error {
-	if i.ptmx != nil {
-		return nil
-	}
-	if !i.IsAlive() {
-		return nil
-	}
-	return i.attachPty()
-}
-
-// ClosePty closes the PTY connection
-func (i *Instance) ClosePty() {
-	if i.ptmx != nil {
-		i.ptmx.Close()
-		i.ptmx = nil
-	}
-}
 
 func (i *Instance) GetPreview(lines int) (string, error) {
 	if !i.IsAlive() {
@@ -313,8 +409,8 @@ func (i *Instance) GetLastLine() string {
 	}
 
 	sessionName := i.TmuxSessionName()
-	// Capture entire scrollback history with colors (-e flag preserves ANSI escape sequences)
-	cmd := exec.Command("tmux", "capture-pane", "-t", sessionName, "-p", "-e", "-S", "-")
+	// Capture last 50 lines with colors (-e flag preserves ANSI escape sequences)
+	cmd := exec.Command("tmux", "capture-pane", "-t", sessionName, "-p", "-e", "-S", "-50")
 	output, err := cmd.Output()
 	if err != nil {
 		return "..."
@@ -322,7 +418,7 @@ func (i *Instance) GetLastLine() string {
 
 	lines := strings.Split(strings.TrimRight(string(output), "\n"), "\n")
 
-	// Find last meaningful line (skip Claude UI elements)
+	// Find last meaningful line
 	for j := len(lines) - 1; j >= 0; j-- {
 		line := lines[j]
 		// Strip ANSI codes for checking
@@ -331,24 +427,25 @@ func (i *Instance) GetLastLine() string {
 		if cleanLine == "" {
 			continue
 		}
-		// Skip status bar
-		if strings.Contains(cleanLine, "? for") || strings.Contains(cleanLine, "Context left") || strings.Contains(cleanLine, "accept edits") {
-			continue
+
+		// Agent-specific filtering using configurable filters
+		agentFilters := filters.LoadFilters()
+		agentName := string(i.Agent)
+		if agentName == "" {
+			agentName = "claude"
 		}
-		// Skip separator lines (more than 20 dash chars)
-		if strings.Count(cleanLine, "─") > 20 {
-			continue
+
+		if config, ok := agentFilters[agentName]; ok {
+			skip, content := filters.ApplyFilter(config, cleanLine)
+			if skip {
+				continue
+			}
+			if content != "" {
+				return content
+			}
 		}
-		// Skip empty prompt
-		if cleanLine == ">" || strings.HasPrefix(cleanLine, "╭") || strings.HasPrefix(cleanLine, "╰") {
-			continue
-		}
-		// Found actual content - return with colors but truncate by visible length
-		if len(cleanLine) > 50 {
-			// Truncate based on clean length, but we need to be careful with ANSI codes
-			// For simplicity, just return the line with colors
-			return line
-		}
+
+		// Found actual content - return with colors
 		return line
 	}
 
