@@ -136,13 +136,18 @@ Each session stores:
 
 ```
 claude-session-manager/
-├── main.go           # Entry point
-├── session/          # Session management & tmux integration
-│   ├── instance.go   # Instance lifecycle & PTY handling
-│   ├── storage.go    # Persistence
+├── main.go              # Entry point
+├── session/             # Session management & tmux integration
+│   ├── instance.go      # Instance lifecycle & PTY handling
+│   ├── storage.go       # Persistence
 │   └── claude_sessions.go  # Claude session discovery
-└── ui/               # Bubbletea TUI
-    └── model.go      # UI model and views
+└── ui/                  # Bubbletea TUI
+    ├── model.go         # Core model, constants, Init, Update
+    ├── handlers.go      # Keyboard input handlers
+    ├── views.go         # View rendering functions
+    ├── colors.go        # Color definitions & gradients
+    ├── styles.go        # Lipgloss style definitions
+    └── helpers.go       # ANSI & string utilities
 ```
 
 ## Dependencies
