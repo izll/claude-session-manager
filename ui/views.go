@@ -828,7 +828,32 @@ func (m Model) getLastLine(inst *session.Instance) string {
 func (m Model) buildSessionListPane(listWidth, contentHeight int) string {
 	var leftPane strings.Builder
 	leftPane.WriteString("\n")
-	leftPane.WriteString(titleStyle.Render(" Sessions "))
+
+	// Count session statuses
+	var active, idle, stopped int
+	for _, inst := range m.instances {
+		switch inst.Status {
+		case session.StatusRunning:
+			if m.isActive[inst.ID] {
+				active++
+			} else {
+				idle++
+			}
+		case session.StatusStopped:
+			stopped++
+		}
+	}
+
+	// Build header with status counts
+	header := titleStyle.Render(" Sessions ")
+	if len(m.instances) > 0 {
+		counts := fmt.Sprintf(" %s %d %s %d %s %d",
+			activeStyle.Render("●"), active,
+			idleStyle.Render("●"), idle,
+			stoppedStyle.Render("○"), stopped)
+		header += dimStyle.Render(counts)
+	}
+	leftPane.WriteString(header)
 	leftPane.WriteString("\n\n")
 
 	if len(m.instances) == 0 && len(m.groups) == 0 {
@@ -884,7 +909,32 @@ func (m Model) buildSessionListPane(listWidth, contentHeight int) string {
 func (m *Model) buildGroupedSessionListPane(listWidth, contentHeight int) string {
 	var leftPane strings.Builder
 	leftPane.WriteString("\n")
-	leftPane.WriteString(titleStyle.Render(" Sessions "))
+
+	// Count session statuses
+	var active, idle, stopped int
+	for _, inst := range m.instances {
+		switch inst.Status {
+		case session.StatusRunning:
+			if m.isActive[inst.ID] {
+				active++
+			} else {
+				idle++
+			}
+		case session.StatusStopped:
+			stopped++
+		}
+	}
+
+	// Build header with status counts
+	header := titleStyle.Render(" Sessions ")
+	if len(m.instances) > 0 {
+		counts := fmt.Sprintf(" %s %d %s %d %s %d",
+			activeStyle.Render("●"), active,
+			idleStyle.Render("●"), idle,
+			stoppedStyle.Render("○"), stopped)
+		header += dimStyle.Render(counts)
+	}
+	leftPane.WriteString(header)
 	leftPane.WriteString("\n\n")
 
 	// Build visible items
