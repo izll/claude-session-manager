@@ -610,6 +610,13 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "R":
 		m.handleForceResize()
 
+	case "U":
+		// Trigger update if available
+		if m.updateAvailable != "" {
+			m.state = stateUpdating
+			return m, runUpdateCmd(m.updateAvailable)
+		}
+
 	case "g":
 		// Create new group
 		m.groupInput.SetValue("")

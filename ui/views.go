@@ -48,6 +48,8 @@ func (m Model) View() string {
 		return m.customCmdView()
 	case stateError:
 		return m.errorView()
+	case stateUpdating:
+		return m.updatingView()
 	default:
 		return m.listView()
 	}
@@ -205,6 +207,7 @@ func (m Model) helpView() string {
 		keyStyle.Render("?/F1") + descStyle.Render(" help"),
 		keyStyle.Render("q") + descStyle.Render(" quit"),
 		keyStyle.Render("R") + descStyle.Render(" resize"),
+		keyStyle.Render("U") + descStyle.Render(" update"),
 	}
 	b.WriteString("  " + strings.Join(otherKeys, "  "))
 	b.WriteString("\n\n")
@@ -234,6 +237,7 @@ func (m Model) helpView() string {
 		{"v Split", "Toggle split view to show two previews"},
 		{"m Mark", "Mark session for split view (pinned on top)"},
 		{"⇥ Tab", "Switch focus between split panels"},
+		{"U Update", "Download and install new version (if available)"},
 	}
 
 	for _, d := range details {
@@ -1538,7 +1542,32 @@ func (m Model) buildStatusBar() string {
 
 	statusText := strings.Join(items, sep)
 
+	// Add update notification if available
+	if m.updateAvailable != "" {
+		updateStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#000000")).
+			Background(lipgloss.Color("#FFD700")).
+			Bold(true).
+			Padding(0, 1)
+		updateNotice := updateStyle.Render("↑ " + m.updateAvailable + " available - press U to update")
+		return "\n" + lipgloss.PlaceHorizontal(m.width, lipgloss.Center, updateNotice) +
+			"\n" + lipgloss.PlaceHorizontal(m.width, lipgloss.Center, statusText)
+	}
+
 	return "\n" + lipgloss.PlaceHorizontal(m.width, lipgloss.Center, statusText)
+}
+
+// updatingView shows a download/update progress overlay
+func (m Model) updatingView() string {
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#7D56F4")).
+		Padding(2, 4)
+
+	content := fmt.Sprintf("Downloading %s...\n\nPlease wait...", m.updateAvailable)
+	box := boxStyle.Render(content)
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
 // formatTimeAgo formats a time as a relative string (e.g., "5 min ago")

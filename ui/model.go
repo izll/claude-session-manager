@@ -8,7 +8,12 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/izll/agent-session-manager/session"
+	"github.com/izll/agent-session-manager/updater"
 )
+
+// Update check messages
+type updateCheckMsg string
+type updateDoneMsg struct{ err error }
 
 // Version info
 const (
@@ -56,6 +61,7 @@ const (
 	stateSelectAgent  // Selecting agent type for new session
 	stateCustomCmd    // Entering custom command
 	stateError        // Showing error overlay
+	stateUpdating     // Downloading update
 )
 
 // Model represents the main TUI application state for Claude Session Manager.
@@ -100,6 +106,7 @@ type Model struct {
 	pendingAgent    session.AgentType         // Agent type for new session
 	customCmdInput  textinput.Model           // Input for custom command
 	tickCount       int                       // Counter for slow tick (update others every 5th tick)
+	updateAvailable string                    // New version available (empty if up to date)
 }
 
 // visibleItem represents an item in the flattened list view (group header or session)
@@ -205,7 +212,24 @@ func (m Model) Init() tea.Cmd {
 		tea.EnterAltScreen,
 		tea.SetWindowTitle("Agent Session Manager"),
 		tea.EnableMouseCellMotion,
+		checkForUpdateCmd(),
 	)
+}
+
+// checkForUpdateCmd checks for updates in the background
+func checkForUpdateCmd() tea.Cmd {
+	return func() tea.Msg {
+		newVersion := updater.CheckForUpdate(AppVersion)
+		return updateCheckMsg(newVersion)
+	}
+}
+
+// runUpdateCmd downloads and installs the update
+func runUpdateCmd(version string) tea.Cmd {
+	return func() tea.Msg {
+		err := updater.DownloadAndInstall(version)
+		return updateDoneMsg{err: err}
+	}
 }
 
 // tickCmd returns a command that sends a tick message after TickInterval
@@ -236,6 +260,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case reattachMsg:
 		// Request window size to refresh dimensions after reattach
 		return m, tea.Batch(tea.ClearScreen, tea.EnableMouseCellMotion, tea.WindowSize())
+
+	case updateCheckMsg:
+		if string(msg) != "" {
+			m.updateAvailable = string(msg)
+		}
+		return m, nil
+
+	case updateDoneMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			// Update successful - show message and quit so user can restart
+			m.err = fmt.Errorf("updated to %s - please restart", m.updateAvailable)
+		}
+		m.state = stateList
+		return m, nil
 
 	case tea.MouseMsg:
 		// Handle mouse wheel scrolling in list view
