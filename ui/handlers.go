@@ -137,9 +137,92 @@ func (m *Model) findGroupIndex(id string) int {
 	return -1
 }
 
+// saveSettings saves UI settings to storage
+func (m *Model) saveSettings() {
+	m.storage.SaveSettings(&session.Settings{
+		CompactList:     m.compactList,
+		HideStatusLines: m.hideStatusLines,
+		SplitView:       m.splitView,
+		MarkedSessionID: m.markedSessionID,
+		Cursor:          m.cursor,
+		SplitFocus:      m.splitFocus,
+	})
+}
+
+// navigatePinned changes the pinned session in split view
+func (m *Model) navigatePinned(direction int) {
+	if len(m.instances) == 0 {
+		return
+	}
+
+	// If groups exist, use visible items
+	if len(m.groups) > 0 {
+		m.buildVisibleItems()
+
+		// Find current pinned index in visible items (sessions only)
+		currentIdx := -1
+		for i, item := range m.visibleItems {
+			if !item.isGroup && item.instance.ID == m.markedSessionID {
+				currentIdx = i
+				break
+			}
+		}
+
+		if currentIdx == -1 {
+			return
+		}
+
+		// Find next/previous session (skip groups)
+		newIdx := currentIdx + direction
+		for newIdx >= 0 && newIdx < len(m.visibleItems) {
+			if !m.visibleItems[newIdx].isGroup {
+				m.markedSessionID = m.visibleItems[newIdx].instance.ID
+				return
+			}
+			newIdx += direction
+		}
+		return
+	}
+
+	// Original behavior for non-grouped view
+	currentIdx := -1
+	for i, inst := range m.instances {
+		if inst.ID == m.markedSessionID {
+			currentIdx = i
+			break
+		}
+	}
+
+	if currentIdx == -1 {
+		return
+	}
+
+	newIdx := currentIdx + direction
+	if newIdx < 0 {
+		newIdx = 0
+	} else if newIdx >= len(m.instances) {
+		newIdx = len(m.instances) - 1
+	}
+
+	m.markedSessionID = m.instances[newIdx].ID
+}
+
 // handleEnterSession starts (if needed) and attaches to the selected session
 func (m *Model) handleEnterSession() tea.Cmd {
-	inst := m.getSelectedInstance()
+	var inst *session.Instance
+
+	// In split view with focus on pinned, attach to pinned session
+	if m.splitView && m.splitFocus == 1 && m.markedSessionID != "" {
+		for _, i := range m.instances {
+			if i.ID == m.markedSessionID {
+				inst = i
+				break
+			}
+		}
+	} else {
+		inst = m.getSelectedInstance()
+	}
+
 	if inst == nil {
 		return nil
 	}
@@ -323,11 +406,15 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "q", "ctrl+c":
+		m.saveSettings() // Save cursor position on quit
 		return m, tea.Quit
 
 	case "up", "k":
-		// If groups exist, navigate through visible items
-		if len(m.groups) > 0 {
+		// In split view with focus on pinned: change pinned session
+		if m.splitView && m.splitFocus == 1 && m.markedSessionID != "" {
+			m.navigatePinned(-1)
+			m.saveSettings()
+		} else if len(m.groups) > 0 {
 			m.buildVisibleItems()
 			if m.cursor > 0 {
 				m.cursor--
@@ -339,8 +426,11 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "down", "j":
-		// If groups exist, navigate through visible items
-		if len(m.groups) > 0 {
+		// In split view with focus on pinned: change pinned session
+		if m.splitView && m.splitFocus == 1 && m.markedSessionID != "" {
+			m.navigatePinned(1)
+			m.saveSettings()
+		} else if len(m.groups) > 0 {
 			m.buildVisibleItems()
 			if m.cursor < len(m.visibleItems)-1 {
 				m.cursor++
@@ -471,17 +561,48 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "l":
 		m.compactList = !m.compactList
-		m.storage.SaveSettings(&session.Settings{
-			CompactList:     m.compactList,
-			HideStatusLines: m.hideStatusLines,
-		})
+		m.saveSettings()
 
 	case "t":
 		m.hideStatusLines = !m.hideStatusLines
-		m.storage.SaveSettings(&session.Settings{
-			CompactList:     m.compactList,
-			HideStatusLines: m.hideStatusLines,
-		})
+		m.saveSettings()
+
+	case "v":
+		m.splitView = !m.splitView
+		m.splitFocus = 0 // Reset focus when toggling
+		m.saveSettings()
+
+	case "tab":
+		// In split view: switch focus between panels
+		if m.splitView && m.markedSessionID != "" {
+			m.splitFocus = 1 - m.splitFocus // Toggle between 0 and 1
+			m.saveSettings()
+		} else {
+			// In normal view: toggle group collapse
+			m.buildVisibleItems()
+			if m.cursor >= 0 && m.cursor < len(m.visibleItems) {
+				item := m.visibleItems[m.cursor]
+				if item.isGroup {
+					m.storage.ToggleGroupCollapsed(item.group.ID)
+					// Reload groups
+					groups, _ := m.storage.GetGroups()
+					m.groups = groups
+					m.buildVisibleItems()
+				}
+			}
+		}
+
+	case "m":
+		// Mark current session for split view
+		inst := m.getSelectedInstance()
+		if inst != nil {
+			if m.markedSessionID == inst.ID {
+				m.markedSessionID = "" // Unmark if already marked
+			} else {
+				m.markedSessionID = inst.ID
+			}
+			m.saveSettings()
+		}
 
 	case "p":
 		m.handleSendPrompt()
@@ -524,20 +645,6 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.state = stateSelectGroup
-		}
-
-	case "tab":
-		// Toggle group collapse
-		m.buildVisibleItems()
-		if m.cursor >= 0 && m.cursor < len(m.visibleItems) {
-			item := m.visibleItems[m.cursor]
-			if item.isGroup {
-				m.storage.ToggleGroupCollapsed(item.group.ID)
-				// Reload groups
-				groups, _ := m.storage.GetGroups()
-				m.groups = groups
-				m.buildVisibleItems()
-			}
 		}
 
 	case "right":

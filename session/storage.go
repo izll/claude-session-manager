@@ -24,8 +24,12 @@ type Group struct {
 
 // Settings stores UI preferences
 type Settings struct {
-	CompactList     bool `json:"compact_list"`
-	HideStatusLines bool `json:"hide_status_lines"`
+	CompactList       bool   `json:"compact_list"`
+	HideStatusLines   bool   `json:"hide_status_lines"`
+	SplitView         bool   `json:"split_view,omitempty"`
+	MarkedSessionID   string `json:"marked_session_id,omitempty"`
+	Cursor            int    `json:"cursor,omitempty"`
+	SplitFocus        int    `json:"split_focus,omitempty"`
 }
 
 type StorageData struct {

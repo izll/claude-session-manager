@@ -64,7 +64,13 @@ func (m Model) listView() string {
 
 	// Build panes using helper methods
 	leftPane := m.buildSessionListPane(listWidth, contentHeight)
-	rightPane := m.buildPreviewPane(contentHeight)
+
+	var rightPane string
+	if m.splitView {
+		rightPane = m.buildSplitPreviewPane(contentHeight)
+	} else {
+		rightPane = m.buildPreviewPane(contentHeight)
+	}
 
 	// Style the panes with borders
 	leftStyled := listPaneStyle.
@@ -183,12 +189,13 @@ func (m Model) helpView() string {
 	b.WriteString("  " + strings.Join(featureKeys, "  "))
 	b.WriteString("\n\n")
 
-	// Row 4: Toggles
+	// Row 4: Toggles & Split View
 	toggleKeys := []string{
 		keyStyle.Render("l") + descStyle.Render(" compact"),
 		keyStyle.Render("y") + descStyle.Render(" autoyes"),
-		keyStyle.Render("→") + descStyle.Render(" expand"),
-		keyStyle.Render("←") + descStyle.Render(" collapse"),
+		keyStyle.Render("v") + descStyle.Render(" split"),
+		keyStyle.Render("m") + descStyle.Render(" mark"),
+		keyStyle.Render("⇥") + descStyle.Render(" focus"),
 	}
 	b.WriteString("  " + strings.Join(toggleKeys, "  "))
 	b.WriteString("\n\n")
@@ -224,6 +231,9 @@ func (m Model) helpView() string {
 		{"l Compact", "Toggle compact view (less spacing between sessions)"},
 		{"t Status", "Toggle status line visibility under sessions"},
 		{"y AutoYes", "Toggle --dangerously-skip-permissions flag"},
+		{"v Split", "Toggle split view to show two previews"},
+		{"m Mark", "Mark session for split view (pinned on top)"},
+		{"⇥ Tab", "Switch focus between split panels"},
 	}
 
 	for _, d := range details {
@@ -682,6 +692,11 @@ func (m Model) renderSessionRow(inst *session.Instance, index int, listWidth int
 		status = stoppedStyle.Render("○") // Red outline - stopped
 	}
 
+	// Add marker for split view
+	if m.markedSessionID == inst.ID {
+		status += dimStyle.Render("◆")
+	}
+
 	// Truncate name to fit
 	name := inst.Name
 	maxNameLen := listWidth - 6
@@ -1098,6 +1113,11 @@ func (m Model) renderGroupedSessionRow(inst *session.Instance, index int, listWi
 		status = stoppedStyle.Render("○") // Red outline - stopped
 	}
 
+	// Add marker for split view
+	if m.markedSessionID == inst.ID {
+		status += dimStyle.Render("◆")
+	}
+
 	// Truncate name to fit (accounting for prefix)
 	name := inst.Name
 	maxNameLen := listWidth - 10
@@ -1279,6 +1299,124 @@ func (m Model) buildPreviewPane(contentHeight int) string {
 	return rightPane.String()
 }
 
+// buildSplitPreviewPane builds split view with two preview panes
+func (m Model) buildSplitPreviewPane(contentHeight int) string {
+	var result strings.Builder
+	previewWidth := m.calculatePreviewWidth()
+
+	// Get selected instance
+	selectedInst := m.getSelectedInstance()
+
+	// Get marked instance
+	var markedInst *session.Instance
+	if m.markedSessionID != "" {
+		for _, inst := range m.instances {
+			if inst.ID == m.markedSessionID {
+				markedInst = inst
+				break
+			}
+		}
+	}
+
+	// Calculate heights for each pane
+	halfHeight := (contentHeight - 1) / 2 // -1 for separator
+
+	// Top pane: marked session (pinned)
+	topFocused := m.splitFocus == 1
+	if markedInst != nil {
+		result.WriteString("\n") // Add spacing at top
+		result.WriteString(m.buildMiniPreview(markedInst, halfHeight, previewWidth, "Pinned", topFocused))
+	} else {
+		result.WriteString("\n")
+		result.WriteString(dimStyle.Render("  Press 'm' to pin a session"))
+		result.WriteString("\n")
+	}
+
+	// Separator
+	result.WriteString(dimStyle.Render(strings.Repeat("─", previewWidth-2)))
+	result.WriteString("\n")
+
+	// Bottom pane: selected session
+	bottomFocused := m.splitFocus == 0
+	if selectedInst != nil && (markedInst == nil || selectedInst.ID != markedInst.ID) {
+		result.WriteString(m.buildMiniPreview(selectedInst, halfHeight, previewWidth, "Selected", bottomFocused))
+	} else if selectedInst != nil {
+		result.WriteString(dimStyle.Render("  (same as pinned)"))
+	}
+
+	return result.String()
+}
+
+// buildMiniPreview builds a compact preview for split view
+func (m Model) buildMiniPreview(inst *session.Instance, height, width int, label string, focused bool) string {
+	var preview strings.Builder
+
+	if inst == nil {
+		preview.WriteString(dimStyle.Render(fmt.Sprintf("  %s: (none)\n", label)))
+		return preview.String()
+	}
+
+	// Focus indicator
+	focusIndicator := " "
+	if focused {
+		focusIndicator = titleStyle.Render("▶")
+	}
+
+	// Header with session name
+	nameStyle := titleStyle
+	if inst.Status == session.StatusRunning {
+		if m.isActive[inst.ID] {
+			nameStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFA500")).Bold(true)
+		} else {
+			nameStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Bold(true)
+		}
+	} else {
+		nameStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5F87")).Bold(true)
+	}
+	preview.WriteString(focusIndicator + " ")
+	preview.WriteString(nameStyle.Render(inst.Name))
+	preview.WriteString("\n")
+
+	// Get preview content for this instance
+	content := ""
+	if inst.Status == session.StatusRunning {
+		content, _ = inst.GetPreview(100)
+	}
+
+	maxLines := height - 2 // -2 for header and margin
+	if maxLines < 2 {
+		maxLines = 2
+	}
+
+	if content == "" {
+		preview.WriteString(dimStyle.Render("  (no output)"))
+		preview.WriteString("\n")
+		// Fill remaining lines with empty space
+		for i := 1; i < maxLines; i++ {
+			preview.WriteString("\n")
+		}
+		return preview.String()
+	}
+
+	// Show last lines
+	lines := strings.Split(content, "\n")
+	startIdx := len(lines) - maxLines
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	displayedLines := 0
+	for i := startIdx; i < len(lines); i++ {
+		preview.WriteString("  " + lines[i] + "\x1b[0m\n")
+		displayedLines++
+	}
+	// Fill remaining lines with empty space
+	for i := displayedLines; i < maxLines; i++ {
+		preview.WriteString("\n")
+	}
+
+	return preview.String()
+}
+
 // buildStatusBar builds the status bar at the bottom
 func (m Model) buildStatusBar() string {
 	// Styles for status bar
@@ -1346,10 +1484,15 @@ func (m Model) buildStatusBar() string {
 	if m.autoYes {
 		autoYesStatus = onStyle.Render("ON")
 	}
+	splitStatus := offStyle.Render("OFF")
+	if m.splitView {
+		splitStatus = onStyle.Render("ON")
+	}
 	p5 := []string{
 		keyStyle.Render("l") + descStyle.Render(" compact ") + compactStatus,
 		keyStyle.Render("t") + descStyle.Render(" status ") + statusLinesStatus,
 		keyStyle.Render("y") + descStyle.Render(" autoyes ") + autoYesStatus,
+		keyStyle.Render("v") + descStyle.Render(" split ") + splitStatus,
 	}
 
 	// Calculate widths and determine what fits

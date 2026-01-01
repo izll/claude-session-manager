@@ -13,7 +13,7 @@ import (
 // Version info
 const (
 	AppName    = "asmgr"
-	AppVersion = "0.1.5"
+	AppVersion = "0.1.6"
 )
 
 // Layout constants
@@ -87,6 +87,9 @@ type Model struct {
 	previewBg       string                    // Preview background color
 	compactList     bool                      // No extra line between sessions
 	hideStatusLines bool                      // Hide last output line under sessions
+	splitView       bool                      // Split preview mode
+	markedSessionID string                    // Session ID marked for split view
+	splitFocus      int                       // 0 = selected (bottom), 1 = pinned (top)
 	groups          []*session.Group          // Session groups
 	groupInput      textinput.Model           // Input for group name
 	groupCursor     int                       // Cursor for group selection
@@ -163,6 +166,10 @@ func NewModel() (Model, error) {
 		isActive:        make(map[string]bool),
 		compactList:     settings.CompactList,
 		hideStatusLines: settings.HideStatusLines,
+		splitView:       settings.SplitView,
+		markedSessionID: settings.MarkedSessionID,
+		cursor:          settings.Cursor,
+		splitFocus:      settings.SplitFocus,
 	}
 
 	// Initialize status and last lines for all instances
