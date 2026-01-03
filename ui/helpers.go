@@ -11,9 +11,17 @@ import (
 // renderOverlayDialog renders a dialog box overlaid on the list view background
 // Background is visible on all sides of the dialog
 func (m Model) renderOverlayDialog(title string, boxContent string, boxWidth int, borderColor string) string {
-	// Render the list view as background
-	background := m.listView()
+	return m.renderOverlayDialogWithBackground(title, boxContent, boxWidth, borderColor, m.listView())
+}
+
+// renderOverlayDialogWithBackground renders a dialog box overlaid on a custom background
+func (m Model) renderOverlayDialogWithBackground(title string, boxContent string, boxWidth int, borderColor string, background string) string {
 	bgLines := strings.Split(background, "\n")
+
+	// Ensure background has enough lines to cover the screen
+	for len(bgLines) < m.height {
+		bgLines = append(bgLines, strings.Repeat(" ", m.width))
+	}
 
 	// Create the box style
 	dialogBoxStyle := lipgloss.NewStyle().

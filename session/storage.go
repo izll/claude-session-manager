@@ -5,11 +5,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"syscall"
 	"time"
 )
 
 type Storage struct {
+	configDir  string
 	configPath string
+	projectID  string // Active project ID ("" = default)
+	lockPath   string // Current lock file path
 }
 
 // Group represents a session group for organizing sessions
@@ -50,8 +55,301 @@ func NewStorage() (*Storage, error) {
 	}
 
 	return &Storage{
+		configDir:  configDir,
 		configPath: filepath.Join(configDir, "sessions.json"),
+		projectID:  "",
 	}, nil
+}
+
+// SetActiveProject switches to a different project
+func (s *Storage) SetActiveProject(projectID string) error {
+	s.projectID = projectID
+	if projectID == "" {
+		s.configPath = filepath.Join(s.configDir, "sessions.json")
+	} else {
+		projectDir := filepath.Join(s.configDir, "projects", projectID)
+		if err := os.MkdirAll(projectDir, 0755); err != nil {
+			return fmt.Errorf("failed to create project directory: %w", err)
+		}
+		s.configPath = filepath.Join(projectDir, "sessions.json")
+	}
+	return nil
+}
+
+// GetActiveProjectID returns the currently active project ID
+func (s *Storage) GetActiveProjectID() string {
+	return s.projectID
+}
+
+// getLockPath returns the lock file path for a project
+func (s *Storage) getLockPath(projectID string) string {
+	if projectID == "" {
+		return filepath.Join(s.configDir, "default.lock")
+	}
+	return filepath.Join(s.configDir, "projects", projectID, "project.lock")
+}
+
+// IsProjectLocked checks if a project is already running
+func (s *Storage) IsProjectLocked(projectID string) (bool, int) {
+	lockPath := s.getLockPath(projectID)
+	data, err := os.ReadFile(lockPath)
+	if os.IsNotExist(err) {
+		return false, 0
+	}
+	if err != nil {
+		return false, 0
+	}
+
+	pid, err := strconv.Atoi(string(data))
+	if err != nil {
+		// Invalid lock file, remove it
+		os.Remove(lockPath)
+		return false, 0
+	}
+
+	// Check if the process is still running
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		os.Remove(lockPath)
+		return false, 0
+	}
+
+	// On Unix, FindProcess always succeeds, so we need to send signal 0 to check
+	err = process.Signal(syscall.Signal(0))
+	if err != nil {
+		// Process is not running, remove stale lock
+		os.Remove(lockPath)
+		return false, 0
+	}
+
+	return true, pid
+}
+
+// LockProject creates a lock file for the current project
+func (s *Storage) LockProject(projectID string) error {
+	lockPath := s.getLockPath(projectID)
+
+	// Ensure directory exists
+	dir := filepath.Dir(lockPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create lock directory: %w", err)
+	}
+
+	// Write current PID to lock file
+	pid := os.Getpid()
+	if err := os.WriteFile(lockPath, []byte(strconv.Itoa(pid)), 0644); err != nil {
+		return fmt.Errorf("failed to create lock file: %w", err)
+	}
+
+	s.lockPath = lockPath
+	return nil
+}
+
+// UnlockProject removes the lock file
+func (s *Storage) UnlockProject() {
+	if s.lockPath != "" {
+		os.Remove(s.lockPath)
+		s.lockPath = ""
+	}
+}
+
+// LoadProjects loads the list of projects
+func (s *Storage) LoadProjects() (*ProjectsData, error) {
+	projectsFile := filepath.Join(s.configDir, "projects.json")
+	data, err := os.ReadFile(projectsFile)
+	if os.IsNotExist(err) {
+		return &ProjectsData{Projects: []*Project{}}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to read projects file: %w", err)
+	}
+
+	var projectsData ProjectsData
+	if err := json.Unmarshal(data, &projectsData); err != nil {
+		return nil, fmt.Errorf("failed to parse projects file: %w", err)
+	}
+
+	if projectsData.Projects == nil {
+		projectsData.Projects = []*Project{}
+	}
+
+	return &projectsData, nil
+}
+
+// SaveProjects saves the list of projects
+func (s *Storage) SaveProjects(projectsData *ProjectsData) error {
+	projectsFile := filepath.Join(s.configDir, "projects.json")
+	data, err := json.MarshalIndent(projectsData, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal projects: %w", err)
+	}
+
+	if err := os.WriteFile(projectsFile, data, 0644); err != nil {
+		return fmt.Errorf("failed to write projects file: %w", err)
+	}
+
+	return nil
+}
+
+// AddProject creates a new project
+func (s *Storage) AddProject(name string) (*Project, error) {
+	projectsData, err := s.LoadProjects()
+	if err != nil {
+		return nil, err
+	}
+
+	// Check for duplicate names
+	for _, p := range projectsData.Projects {
+		if p.Name == name {
+			return nil, fmt.Errorf("project with name '%s' already exists", name)
+		}
+	}
+
+	project := NewProject(name)
+	projectsData.Projects = append(projectsData.Projects, project)
+
+	if err := s.SaveProjects(projectsData); err != nil {
+		return nil, err
+	}
+
+	return project, nil
+}
+
+// RemoveProject removes a project and its data
+func (s *Storage) RemoveProject(id string) error {
+	projectsData, err := s.LoadProjects()
+	if err != nil {
+		return err
+	}
+
+	newProjects := make([]*Project, 0, len(projectsData.Projects))
+	found := false
+	for _, p := range projectsData.Projects {
+		if p.ID == id {
+			found = true
+			continue
+		}
+		newProjects = append(newProjects, p)
+	}
+
+	if !found {
+		return fmt.Errorf("project not found")
+	}
+
+	projectsData.Projects = newProjects
+
+	// Remove project directory
+	projectDir := filepath.Join(s.configDir, "projects", id)
+	os.RemoveAll(projectDir)
+
+	return s.SaveProjects(projectsData)
+}
+
+// RenameProject renames a project
+func (s *Storage) RenameProject(id, name string) error {
+	projectsData, err := s.LoadProjects()
+	if err != nil {
+		return err
+	}
+
+	for _, p := range projectsData.Projects {
+		if p.ID == id {
+			p.Name = name
+			return s.SaveProjects(projectsData)
+		}
+	}
+
+	return fmt.Errorf("project not found")
+}
+
+// GetProject returns a project by ID
+func (s *Storage) GetProject(id string) (*Project, error) {
+	projectsData, err := s.LoadProjects()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, p := range projectsData.Projects {
+		if p.ID == id {
+			return p, nil
+		}
+	}
+
+	return nil, fmt.Errorf("project not found")
+}
+
+// ImportDefaultSessions moves sessions from default storage to a project
+func (s *Storage) ImportDefaultSessions(projectID string) (int, error) {
+	// Save current project
+	originalProject := s.projectID
+
+	// Load default sessions
+	s.projectID = ""
+	s.configPath = filepath.Join(s.configDir, "sessions.json")
+	defaultInstances, defaultGroups, _, err := s.LoadAllWithSettings()
+	if err != nil {
+		s.projectID = originalProject
+		return 0, err
+	}
+
+	if len(defaultInstances) == 0 {
+		s.projectID = originalProject
+		return 0, nil
+	}
+
+	// Switch to target project
+	if err := s.SetActiveProject(projectID); err != nil {
+		s.projectID = originalProject
+		return 0, err
+	}
+
+	// Load project's existing sessions
+	projectInstances, projectGroups, projectSettings, err := s.LoadAllWithSettings()
+	if err != nil {
+		s.projectID = originalProject
+		return 0, err
+	}
+
+	// Merge sessions and groups
+	projectInstances = append(projectInstances, defaultInstances...)
+	for _, g := range defaultGroups {
+		// Check if group with same name exists
+		exists := false
+		for _, pg := range projectGroups {
+			if pg.Name == g.Name {
+				exists = true
+				// Update instance group IDs to point to existing group
+				for _, inst := range defaultInstances {
+					if inst.GroupID == g.ID {
+						inst.GroupID = pg.ID
+					}
+				}
+				break
+			}
+		}
+		if !exists {
+			projectGroups = append(projectGroups, g)
+		}
+	}
+
+	// Save merged data to project
+	if err := s.SaveAll(projectInstances, projectGroups, projectSettings); err != nil {
+		s.projectID = originalProject
+		return 0, err
+	}
+
+	// Clear default sessions
+	s.projectID = ""
+	s.configPath = filepath.Join(s.configDir, "sessions.json")
+	if err := s.SaveAll([]*Instance{}, []*Group{}, &Settings{}); err != nil {
+		s.projectID = originalProject
+		return len(defaultInstances), err
+	}
+
+	// Restore original project
+	s.SetActiveProject(originalProject)
+
+	return len(defaultInstances), nil
 }
 
 func (s *Storage) Load() ([]*Instance, error) {

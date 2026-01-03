@@ -18,7 +18,7 @@ type updateDoneMsg struct{ err error }
 // Version info
 const (
 	AppName    = "asmgr"
-	AppVersion = "0.2.1"
+	AppVersion = "0.3.0"
 )
 
 // Layout constants
@@ -47,12 +47,17 @@ const (
 type state int
 
 const (
-	stateList state = iota
+	stateProjectSelect state = iota // Project selection at startup
+	stateNewProject                  // Creating new project
+	stateList
 	stateNewName
 	stateNewPath
 	stateSelectClaudeSession // Selecting Claude session to resume
 	stateConfirmDelete
+	stateConfirmDeleteProject // Confirm project deletion
+	stateConfirmImport        // Confirm import sessions
 	stateRename
+	stateRenameProject // Renaming a project
 	stateHelp
 	stateColorPicker
 	statePrompt       // Send text to session
@@ -110,6 +115,13 @@ type Model struct {
 	updateAvailable string                    // New version available (empty if up to date)
 	previewScroll   int                       // Preview scroll offset (0 = bottom, positive = scroll up)
 	scrollContent   string                    // Extended content for scrolling (fetched on demand)
+	projects        []*session.Project        // Available projects
+	projectCursor   int                       // Cursor for project selection
+	activeProject   *session.Project          // Currently active project (nil = default)
+	projectInput    textinput.Model           // Input for project name
+	deleteProjectTarget *session.Project      // Project being deleted
+	importTarget        *session.Project      // Project to import sessions into
+	previousState       state                 // Previous state to return to from error dialog
 }
 
 // visibleItem represents an item in the flattened list view (group header or session)
@@ -134,10 +146,8 @@ func NewModel() (Model, error) {
 		return Model{}, err
 	}
 
-	instances, groups, settings, err := storage.LoadAllWithSettings()
-	if err != nil {
-		return Model{}, err
-	}
+	// Don't load sessions yet - wait until project is selected
+	// instances, groups, settings will be loaded in switchToProject
 
 	nameInput := textinput.New()
 	nameInput.Placeholder = "Session name"
@@ -161,42 +171,35 @@ func NewModel() (Model, error) {
 	customCmdInput.Placeholder = "command --flags"
 	customCmdInput.CharLimit = 500
 
+	projectInput := textinput.New()
+	projectInput.Placeholder = "Project name"
+	projectInput.CharLimit = 50
+
+	// Load projects
+	projectsData, err := storage.LoadProjects()
+	if err != nil {
+		return Model{}, err
+	}
+
 	m := Model{
-		instances:       instances,
+		instances:       []*session.Instance{}, // Empty until project selected
 		storage:         storage,
-		state:           stateList,
+		state:           stateProjectSelect, // Start with project selection
 		nameInput:       nameInput,
 		pathInput:       pathInput,
 		promptInput:     promptInput,
 		groupInput:      groupInput,
 		customCmdInput:  customCmdInput,
-		groups:          groups,
+		projectInput:    projectInput,
+		projects:        projectsData.Projects,
+		projectCursor:   0, // Default to first project or "Continue without project"
+		groups:          []*session.Group{}, // Empty until project selected
 		lastLines:       make(map[string]string),
 		prevContent:     make(map[string]string),
 		isActive:        make(map[string]bool),
-		compactList:     settings.CompactList,
-		hideStatusLines: settings.HideStatusLines,
-		splitView:       settings.SplitView,
-		markedSessionID: settings.MarkedSessionID,
-		cursor:          settings.Cursor,
-		splitFocus:      settings.SplitFocus,
 	}
 
-	// Initialize status and last lines for all instances
-	for _, inst := range instances {
-		inst.UpdateStatus()
-		m.lastLines[inst.ID] = inst.GetLastLine()
-	}
-
-	// Initialize preview for first instance
-	if len(instances) > 0 {
-		preview, err := instances[0].GetPreview(PreviewLineCount)
-		if err != nil {
-			m.preview = "(error loading preview)"
-		} else {
-			m.preview = preview
-		}
-	}
+	// Sessions will be loaded when user selects a project via switchToProject
 
 	return m, nil
 }
@@ -302,6 +305,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch m.state {
+		case stateProjectSelect:
+			return m.handleProjectSelectKeys(msg)
+		case stateNewProject:
+			return m.handleNewProjectKeys(msg)
+		case stateConfirmDeleteProject:
+			return m.handleConfirmDeleteProjectKeys(msg)
+		case stateConfirmImport:
+			return m.handleConfirmImportKeys(msg)
+		case stateRenameProject:
+			return m.handleRenameProjectKeys(msg)
 		case stateList:
 			return m.handleListKeys(msg)
 		case stateNewName:
@@ -353,6 +366,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.state == stateCustomCmd {
 		m.customCmdInput, cmd = m.customCmdInput.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+	if m.state == stateNewProject || m.state == stateRenameProject {
+		m.projectInput, cmd = m.projectInput.Update(msg)
 		cmds = append(cmds, cmd)
 	}
 
@@ -583,4 +600,77 @@ func (m *Model) isLastInGroup(index int) bool {
 	}
 	nextItem := m.visibleItems[index+1]
 	return nextItem.isGroup || nextItem.instance.GroupID != groupID
+}
+
+// switchToProject switches to a different project and reloads data
+func (m *Model) switchToProject(project *session.Project) error {
+	var projectID string
+	projectName := "default"
+	if project != nil {
+		projectID = project.ID
+		projectName = project.Name
+	}
+
+	// Check if project is already locked by another instance
+	locked, pid := m.storage.IsProjectLocked(projectID)
+	if locked {
+		return fmt.Errorf("project '%s' is already open (PID: %d)", projectName, pid)
+	}
+
+	// Release current lock before switching
+	m.storage.UnlockProject()
+
+	// Switch storage to new project
+	if err := m.storage.SetActiveProject(projectID); err != nil {
+		return err
+	}
+
+	// Lock the new project
+	if err := m.storage.LockProject(projectID); err != nil {
+		return err
+	}
+
+	// Load the new project's sessions
+	instances, groups, settings, err := m.storage.LoadAllWithSettings()
+	if err != nil {
+		return err
+	}
+
+	m.activeProject = project
+	m.instances = instances
+	m.groups = groups
+	m.cursor = settings.Cursor
+	m.compactList = settings.CompactList
+	m.hideStatusLines = settings.HideStatusLines
+	m.splitView = settings.SplitView
+	m.markedSessionID = settings.MarkedSessionID
+	m.splitFocus = settings.SplitFocus
+
+	// Reset maps
+	m.lastLines = make(map[string]string)
+	m.prevContent = make(map[string]string)
+	m.isActive = make(map[string]bool)
+
+	// Initialize status and last lines for all instances
+	for _, inst := range m.instances {
+		inst.UpdateStatus()
+		m.lastLines[inst.ID] = inst.GetLastLine()
+	}
+
+	// Initialize preview
+	if len(m.instances) > 0 {
+		if m.cursor >= len(m.instances) {
+			m.cursor = 0
+		}
+		preview, err := m.instances[m.cursor].GetPreview(PreviewLineCount)
+		if err != nil {
+			m.preview = "(error loading preview)"
+		} else {
+			m.preview = preview
+		}
+	} else {
+		m.preview = ""
+	}
+
+	return nil
 }

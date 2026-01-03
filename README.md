@@ -17,6 +17,8 @@ A powerful terminal UI (TUI) application for managing multiple AI coding assista
 
 ## Features
 
+- **Projects/Workspaces** - Organize sessions into separate projects with isolated session lists
+- **Single Instance Lock** - Only one instance of ASMGR can run per project at a time
 - **Multi-Agent Support** - Run Claude, Gemini, Aider, Codex, Amazon Q, OpenCode, or custom commands
 - **Multi-Session Management** - Run and manage multiple AI sessions simultaneously
 - **Live Preview** - Real-time preview of agent output with ANSI color support
@@ -112,6 +114,15 @@ asmgr
 | `t` | Toggle status lines (last output under sessions) |
 | `y` | Toggle auto-yes mode (`--dangerously-skip-permissions`) |
 
+#### Projects
+| Key | Action |
+|-----|--------|
+| `P` | Return to project selector |
+| `n` | Create new project (in project selector) |
+| `e` | Rename project (in project selector) |
+| `d` | Delete project (in project selector) |
+| `i` | Import sessions from default to current project |
+
 #### Other
 | Key | Action |
 |-----|--------|
@@ -170,6 +181,40 @@ Organize your sessions into collapsible groups:
 
 Sessions without a group appear at the bottom of the list.
 
+## Projects
+
+Projects allow you to organize your sessions into separate workspaces. Each project has its own isolated session list and groups.
+
+### Project Selector
+
+When you start ASMGR, you'll see the project selector:
+
+```
+┌─────────────────────────────────────┐
+│  Agent Session Manager              │
+│             v0.3.0                  │
+├─────────────────────────────────────┤
+│  > Backend API         [5 sessions] │
+│    Frontend App        [3 sessions] │
+│    DevOps Scripts      [2 sessions] │
+│  ───────────────────────────────────│
+│    [ ] Continue without project     │
+│    [+] New Project                  │
+└─────────────────────────────────────┘
+```
+
+- Select an existing project to work with its sessions
+- Choose "Continue without project" for backward-compatible default sessions
+- Create a new project to start fresh
+
+### Single Instance Lock
+
+Only one instance of ASMGR can run per project at a time. If you try to open a project that's already open in another terminal, you'll see an error with the PID of the running instance.
+
+### Session Import
+
+Press `i` in the project selector to import sessions from the default (no project) session list into the selected project. This is useful when migrating from the old single-session-list mode to the new project-based organization.
+
 ## Activity Indicators
 
 Sessions show different status indicators:
@@ -181,6 +226,20 @@ Sessions show different status indicators:
 ## Configuration
 
 Configuration files are stored in `~/.config/agent-session-manager/`:
+
+```
+~/.config/agent-session-manager/
+├── projects.json              # Project list & metadata
+├── sessions.json              # Default (no project) sessions
+└── projects/
+    ├── backend-api/
+    │   └── sessions.json      # Project-specific sessions
+    └── frontend-app/
+        └── sessions.json
+```
+
+### projects.json
+Stores the list of projects with their names and creation dates.
 
 ### sessions.json
 Stores sessions and groups:
@@ -213,7 +272,8 @@ agent-session-manager/
 ├── main.go              # Entry point
 ├── session/             # Session management & tmux integration
 │   ├── instance.go      # Instance lifecycle & PTY handling
-│   ├── storage.go       # Persistence
+│   ├── storage.go       # Persistence & project management
+│   ├── project.go       # Project data structures
 │   └── claude_sessions.go  # Claude session discovery
 └── ui/                  # Bubbletea TUI
     ├── model.go         # Core model, constants, Init, Update

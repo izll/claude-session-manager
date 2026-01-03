@@ -22,6 +22,16 @@ func truncateRunes(s string, maxLen int) string {
 // It returns different views based on the current application state.
 func (m Model) View() string {
 	switch m.state {
+	case stateProjectSelect:
+		return m.projectSelectView()
+	case stateNewProject:
+		return m.newProjectView()
+	case stateConfirmDeleteProject:
+		return m.confirmDeleteProjectView()
+	case stateConfirmImport:
+		return m.confirmImportView()
+	case stateRenameProject:
+		return m.renameProjectView()
 	case stateHelp:
 		return m.helpView()
 	case stateConfirmDelete:
@@ -202,7 +212,15 @@ func (m Model) helpView() string {
 	b.WriteString("  " + strings.Join(toggleKeys, "  "))
 	b.WriteString("\n\n")
 
-	// Row 5: Other
+	// Row 5: Projects
+	projectKeys := []string{
+		keyStyle.Render("P") + descStyle.Render(" projects"),
+		keyStyle.Render("i") + descStyle.Render(" import"),
+	}
+	b.WriteString("  " + strings.Join(projectKeys, "  "))
+	b.WriteString("\n\n")
+
+	// Row 6: Other
 	otherKeys := []string{
 		keyStyle.Render("?/F1") + descStyle.Render(" help"),
 		keyStyle.Render("q") + descStyle.Render(" quit"),
@@ -238,6 +256,8 @@ func (m Model) helpView() string {
 		{"m Mark", "Mark session for split view (pinned on top)"},
 		{"⇥ Tab", "Switch focus between split panels"},
 		{"U Update", "Download and install new version (if available)"},
+		{"P Projects", "Return to project selector"},
+		{"i Import", "Import sessions from default into current project"},
 		{"⇧↑/PgUp", "Scroll preview up"},
 		{"⇧↓/PgDn", "Scroll preview down"},
 		{"Home/End", "Jump to top/bottom of preview"},
@@ -867,8 +887,12 @@ func (m Model) buildSessionListPane(listWidth, contentHeight int) string {
 		}
 	}
 
-	// Build header with status counts
-	header := titleStyle.Render(" Sessions ")
+	// Build header with project name and status counts
+	headerText := " Sessions "
+	if m.activeProject != nil {
+		headerText = fmt.Sprintf(" %s ", m.activeProject.Name)
+	}
+	header := titleStyle.Render(headerText)
 	if len(m.instances) > 0 {
 		counts := fmt.Sprintf(" %s %d %s %d %s %d",
 			activeStyle.Render("●"), active,
@@ -948,8 +972,12 @@ func (m *Model) buildGroupedSessionListPane(listWidth, contentHeight int) string
 		}
 	}
 
-	// Build header with status counts
-	header := titleStyle.Render(" Sessions ")
+	// Build header with project name and status counts
+	headerText := " Sessions "
+	if m.activeProject != nil {
+		headerText = fmt.Sprintf(" %s ", m.activeProject.Name)
+	}
+	header := titleStyle.Render(headerText)
 	if len(m.instances) > 0 {
 		counts := fmt.Sprintf(" %s %d %s %d %s %d",
 			activeStyle.Render("●"), active,
@@ -1831,7 +1859,7 @@ func (m Model) customCmdView() string {
 	return m.renderOverlayDialog(" Custom Command ", boxContent.String(), boxWidth, "#7D56F4")
 }
 
-// errorView renders the error overlay dialog
+// errorView renders the error/info overlay dialog
 func (m Model) errorView() string {
 	var boxContent strings.Builder
 	boxContent.WriteString("\n")
@@ -1841,11 +1869,251 @@ func (m Model) errorView() string {
 		errMsg = m.err.Error()
 	}
 
-	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555"))
-	boxContent.WriteString(errStyle.Render(fmt.Sprintf("  %s", errMsg)))
+	// Detect success messages
+	isSuccess := strings.HasPrefix(errMsg, "successfully")
+	title := " Error "
+	color := "#FF5555"
+	textColor := "#FF5555"
+
+	if isSuccess {
+		title = " Success "
+		color = "#04B575"
+		textColor = "#04B575"
+	}
+
+	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(textColor))
+	boxContent.WriteString(textStyle.Render(fmt.Sprintf("  %s", errMsg)))
 	boxContent.WriteString("\n\n")
 	boxContent.WriteString(helpStyle.Render("  Press any key to close"))
 	boxContent.WriteString("\n")
 
-	return m.renderOverlayDialog(" Error ", boxContent.String(), 60, "#FF5555")
+	// Use appropriate background based on previous state
+	var background string
+	switch m.previousState {
+	case stateProjectSelect, stateNewProject, stateRenameProject, stateConfirmDeleteProject, stateConfirmImport:
+		background = m.projectSelectView()
+	default:
+		background = m.listView()
+	}
+
+	return m.renderOverlayDialogWithBackground(title, boxContent.String(), 60, color, background)
+}
+
+// projectSelectView renders the project selection screen
+func (m Model) projectSelectView() string {
+	var b strings.Builder
+
+	// Title
+	title := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FAFAFA")).
+		Background(lipgloss.Color("#7D56F4")).
+		Bold(true).
+		Padding(0, 2).
+		Render(" Agent Session Manager ")
+
+	b.WriteString("\n")
+	b.WriteString(lipgloss.PlaceHorizontal(m.width, lipgloss.Center, title))
+	b.WriteString("\n")
+	version := dimStyle.Render(fmt.Sprintf("v%s", AppVersion))
+	b.WriteString(lipgloss.PlaceHorizontal(m.width, lipgloss.Center, version))
+	b.WriteString("\n\n")
+
+	// Calculate box width
+	boxWidth := 50
+	if m.width > 60 {
+		boxWidth = m.width / 2
+	}
+	if boxWidth > 80 {
+		boxWidth = 80
+	}
+
+	// Build the project list
+	var content strings.Builder
+
+	// Projects first
+	for i, project := range m.projects {
+		sessionCount := m.storage.GetProjectSessionCount(project.ID)
+		countStr := fmt.Sprintf("[%d sessions]", sessionCount)
+
+		line := fmt.Sprintf("  %s", project.Name)
+		// Pad to align counts
+		padding := boxWidth - len(line) - len(countStr) - 4
+		if padding < 1 {
+			padding = 1
+		}
+
+		if i == m.projectCursor {
+			style := listSelectedStyle
+			content.WriteString(style.Render(fmt.Sprintf("> %s%s%s", project.Name, strings.Repeat(" ", padding), countStr)))
+		} else {
+			content.WriteString(fmt.Sprintf("  %s%s%s", project.Name, strings.Repeat(" ", padding), dimStyle.Render(countStr)))
+		}
+		content.WriteString("\n")
+	}
+
+	// Separator after projects
+	if len(m.projects) > 0 {
+		content.WriteString(dimStyle.Render("  " + strings.Repeat("─", boxWidth-4)))
+		content.WriteString("\n")
+	}
+
+	// Continue without project option (after projects)
+	continueIdx := len(m.projects)
+	if m.projectCursor == continueIdx {
+		content.WriteString(listSelectedStyle.Render("> [ ] Continue without project"))
+	} else {
+		content.WriteString("  [ ] Continue without project")
+	}
+	content.WriteString("\n")
+
+	// New Project option (always last)
+	newProjectIdx := len(m.projects) + 1
+	if m.projectCursor == newProjectIdx {
+		content.WriteString(listSelectedStyle.Render("> [+] New Project"))
+	} else {
+		content.WriteString("  [+] New Project")
+	}
+	content.WriteString("\n")
+
+	// Wrap in a box
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#7D56F4")).
+		Padding(1, 2).
+		Width(boxWidth)
+
+	b.WriteString(lipgloss.PlaceHorizontal(m.width, lipgloss.Center, boxStyle.Render(content.String())))
+	b.WriteString("\n\n")
+
+	// Help text
+	helpText := helpStyle.Render("↑/↓ navigate • enter select • n new • e rename • d delete • i import • q quit")
+	b.WriteString(lipgloss.PlaceHorizontal(m.width, lipgloss.Center, helpText))
+
+	return b.String()
+}
+
+// newProjectView renders the new project creation dialog
+func (m Model) newProjectView() string {
+	var boxContent strings.Builder
+	boxContent.WriteString("\n")
+	boxContent.WriteString("  Project Name:\n")
+	boxContent.WriteString("  " + m.projectInput.View() + "\n\n")
+	boxContent.WriteString(helpStyle.Render("  enter: create  esc: cancel"))
+	boxContent.WriteString("\n")
+
+	return m.renderOverlayDialog(" New Project ", boxContent.String(), 50, "#7D56F4")
+}
+
+// renameProjectView renders the project rename dialog
+func (m Model) renameProjectView() string {
+	var boxContent strings.Builder
+	boxContent.WriteString("\n")
+	boxContent.WriteString("  New Name:\n")
+	boxContent.WriteString("  " + m.projectInput.View() + "\n\n")
+	boxContent.WriteString(helpStyle.Render("  enter: save  esc: cancel"))
+	boxContent.WriteString("\n")
+
+	return m.renderOverlayDialog(" Rename Project ", boxContent.String(), 50, "#7D56F4")
+}
+
+// confirmDeleteProjectView renders the project deletion confirmation
+func (m Model) confirmDeleteProjectView() string {
+	var boxContent strings.Builder
+	boxContent.WriteString("\n")
+	if m.deleteProjectTarget != nil {
+		boxContent.WriteString(fmt.Sprintf("  Delete project '%s'?\n", m.deleteProjectTarget.Name))
+		boxContent.WriteString("  All sessions in this project will be deleted.\n\n")
+	}
+	boxContent.WriteString(helpStyle.Render("  y: yes  n: no"))
+	boxContent.WriteString("\n")
+
+	return m.renderOverlayDialog(" Confirm Delete ", boxContent.String(), 50, "#FF5F87")
+}
+
+// confirmImportView renders the import confirmation dialog with default sessions as background
+func (m Model) confirmImportView() string {
+	var boxContent strings.Builder
+	boxContent.WriteString("\n")
+
+	// Load default sessions
+	originalProject := m.storage.GetActiveProjectID()
+	m.storage.SetActiveProject("")
+	defaultInstances, defaultGroups, _ := m.storage.LoadAll()
+	m.storage.SetActiveProject(originalProject)
+
+	if m.importTarget != nil {
+		boxContent.WriteString(fmt.Sprintf("  Import %d sessions into '%s'?\n\n", len(defaultInstances), m.importTarget.Name))
+	}
+
+	boxContent.WriteString(helpStyle.Render("  y: yes  n: no"))
+	boxContent.WriteString("\n")
+
+	// Create background showing default sessions
+	background := m.renderDefaultSessionsBackground(defaultInstances, defaultGroups)
+
+	return m.renderOverlayDialogWithBackground(" Confirm Import ", boxContent.String(), 50, "#7D56F4", background)
+}
+
+// renderDefaultSessionsBackground renders a view of the default (no project) sessions
+func (m Model) renderDefaultSessionsBackground(instances []*session.Instance, groups []*session.Group) string {
+	listWidth := ListPaneWidth
+	previewWidth := m.calculatePreviewWidth()
+	contentHeight := m.height - 1
+	if contentHeight < MinContentHeight {
+		contentHeight = MinContentHeight
+	}
+
+	// Build left pane with "Sessions to Import" header
+	var leftPane strings.Builder
+	leftPane.WriteString("\n")
+
+	header := titleStyle.Render(" Sessions to Import ")
+	leftPane.WriteString(header)
+	leftPane.WriteString("\n\n")
+
+	if len(instances) == 0 {
+		leftPane.WriteString(" No sessions\n")
+	} else {
+		for i, inst := range instances {
+			if i >= contentHeight-5 {
+				leftPane.WriteString(dimStyle.Render(fmt.Sprintf("  ... and %d more\n", len(instances)-i)))
+				break
+			}
+			var status string
+			if inst.Status == session.StatusRunning {
+				status = activeStyle.Render("●")
+			} else {
+				status = stoppedStyle.Render("○")
+			}
+			leftPane.WriteString(fmt.Sprintf("   %s %s\n", status, inst.Name))
+		}
+	}
+
+	// Build right pane (empty preview)
+	var rightPane strings.Builder
+	rightPane.WriteString("\n")
+	rightPane.WriteString(titleStyle.Render(" Preview "))
+	rightPane.WriteString(dimStyle.Render(fmt.Sprintf(" %s v%s ", AppName, AppVersion)))
+	rightPane.WriteString("\n\n")
+	rightPane.WriteString(dimStyle.Render("  Select a project to import these sessions"))
+
+	// Style the panes
+	leftStyled := listPaneStyle.
+		Width(listWidth).
+		Height(contentHeight).
+		Render(leftPane.String())
+
+	rightStyled := previewPaneStyle.
+		Width(previewWidth).
+		Height(contentHeight).
+		Render(rightPane.String())
+
+	// Join panes horizontally
+	content := lipgloss.JoinHorizontal(lipgloss.Top, leftStyled, rightStyled)
+
+	var b strings.Builder
+	b.WriteString(content)
+	b.WriteString("\n")
+
+	return b.String()
 }
