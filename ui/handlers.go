@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/izll/agent-session-manager/session"
+	"github.com/izll/agent-session-manager/updater"
 )
 
 // showError displays an error in a dialog and remembers the current state to return to
@@ -739,11 +741,9 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.handleForceResize()
 
 	case "U":
-		// Trigger update if available
-		if m.updateAvailable != "" {
-			m.state = stateUpdating
-			return m, runUpdateCmd(m.updateAvailable)
-		}
+		// Show update confirmation
+		m.state = stateConfirmUpdate
+		return m, nil
 
 	case "P":
 		// Go back to project selection
@@ -1657,6 +1657,51 @@ func (m Model) handleErrorKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.state = stateList
 	}
 	m.previousState = stateList
+	return m, nil
+}
+
+// handleUpdateSuccessKeys handles keyboard input in the update success overlay
+func (m Model) handleUpdateSuccessKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Any key closes the success dialog
+	m.successMsg = ""
+	// Return to appropriate state based on previous state
+	switch m.previousState {
+	case stateProjectSelect, stateNewProject, stateRenameProject, stateConfirmDeleteProject, stateConfirmImport:
+		m.state = stateProjectSelect
+	default:
+		m.state = stateList
+	}
+	m.previousState = stateList
+	return m, nil
+}
+
+// handleConfirmUpdateKeys handles keyboard input in the update confirmation overlay
+func (m Model) handleConfirmUpdateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		// If we already know the version, start download immediately
+		if m.updateAvailable != "" {
+			if updater.IsPackageManaged() {
+				// Check if deb
+				if _, err := os.Stat("/var/lib/dpkg/info/asmgr.list"); err == nil {
+					m.state = stateDownloadingDeb
+					return m, runDebDownload(m.updateAvailable)
+				}
+				// Otherwise rpm
+				m.state = stateDownloadingRpm
+				return m, runRpmDownload(m.updateAvailable)
+			}
+			m.state = stateUpdating
+			return m, runUpdateCmd(m.updateAvailable)
+		}
+		// Otherwise check for updates first
+		m.state = stateCheckingUpdate
+		return m, checkForUpdateCmd()
+	case "n", "N", "esc":
+		// Cancel - go back to list
+		m.state = stateList
+		return m, nil
+	}
 	return m, nil
 }
 

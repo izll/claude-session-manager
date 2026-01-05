@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"time"
 
 	"github.com/charmbracelet/bubbles/cursor"
@@ -14,11 +16,19 @@ import (
 // Update check messages
 type updateCheckMsg string
 type updateDoneMsg struct{ err error }
+type debDownloadDoneMsg struct {
+	err     error
+	debPath string
+}
+type rpmDownloadDoneMsg struct {
+	err     error
+	rpmPath string
+}
 
 // Version info
 const (
 	AppName    = "asmgr"
-	AppVersion = "0.3.6"
+	AppVersion = "0.3.7"
 )
 
 // Layout constants
@@ -66,10 +76,15 @@ const (
 	stateNewGroup     // Creating new group
 	stateRenameGroup  // Renaming a group
 	stateSelectGroup  // Assigning session to group
-	stateSelectAgent  // Selecting agent type for new session
-	stateCustomCmd    // Entering custom command
-	stateError        // Showing error overlay
-	stateUpdating     // Downloading update
+	stateSelectAgent    // Selecting agent type for new session
+	stateCustomCmd      // Entering custom command
+	stateError          // Showing error overlay
+	stateConfirmUpdate  // Confirming update action
+	stateCheckingUpdate // Checking for updates
+	stateUpdating       // Downloading update
+	stateDownloadingDeb // Downloading .deb package for dpkg install
+	stateDownloadingRpm // Downloading .rpm package for rpm install
+	stateUpdateSuccess  // Showing successful update message
 )
 
 // Model represents the main TUI application state for Claude Session Manager.
@@ -89,6 +104,7 @@ type Model struct {
 	deleteTarget    *session.Instance
 	preview         string
 	err             error
+	successMsg      string                        // Success message to display
 	agentSessions       []session.AgentSession    // Agent sessions for current instance
 	sessionCursor       int                       // Cursor for Claude session selection
 	pendingInstance     *session.Instance         // Instance being created
@@ -243,6 +259,22 @@ func runUpdateCmd(version string) tea.Cmd {
 	}
 }
 
+// runDebDownload downloads the .deb package
+func runDebDownload(version string) tea.Cmd {
+	return func() tea.Msg {
+		debPath, err := updater.DownloadDeb(version)
+		return debDownloadDoneMsg{err: err, debPath: debPath}
+	}
+}
+
+// runRpmDownload downloads the .rpm package
+func runRpmDownload(version string) tea.Cmd {
+	return func() tea.Msg {
+		rpmPath, err := updater.DownloadRpm(version)
+		return rpmDownloadDoneMsg{err: err, rpmPath: rpmPath}
+	}
+}
+
 // tickCmd returns a command that sends a tick message after TickInterval
 func tickCmd() tea.Cmd {
 	return tea.Tick(TickInterval, func(t time.Time) tea.Msg {
@@ -273,19 +305,85 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(tea.ClearScreen, tea.EnableMouseCellMotion, tea.WindowSize())
 
 	case updateCheckMsg:
-		if string(msg) != "" {
-			m.updateAvailable = string(msg)
+		newVersion := string(msg)
+		if newVersion != "" {
+			m.updateAvailable = newVersion
+		}
+
+		// If we're actively checking for updates (user pressed U)
+		if m.state == stateCheckingUpdate {
+			if newVersion != "" {
+				// Update available - start download based on package type
+				if updater.IsPackageManaged() {
+					// Check if deb
+					if _, err := os.Stat("/var/lib/dpkg/info/asmgr.list"); err == nil {
+						m.state = stateDownloadingDeb
+						return m, runDebDownload(newVersion)
+					}
+					// Otherwise rpm
+					m.state = stateDownloadingRpm
+					return m, runRpmDownload(newVersion)
+				}
+				// Tarball update
+				m.state = stateUpdating
+				return m, runUpdateCmd(newVersion)
+			} else {
+				// Already up to date
+				m.err = fmt.Errorf("already up to date (v%s)", AppVersion)
+				m.previousState = stateList
+				m.state = stateError
+				return m, nil
+			}
 		}
 		return m, nil
+
+	case debDownloadDoneMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.previousState = m.state
+			m.state = stateError
+			return m, nil
+		}
+		// Deb downloaded - now run sudo dpkg -i via tea.ExecProcess
+		cmd := exec.Command("sudo", "dpkg", "-i", msg.debPath)
+		return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+			// Clean up temp file
+			os.Remove(msg.debPath)
+			if err != nil {
+				return updateDoneMsg{err: fmt.Errorf("dpkg installation failed: %w", err)}
+			}
+			return updateDoneMsg{err: nil}
+		})
+
+	case rpmDownloadDoneMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			m.previousState = m.state
+			m.state = stateError
+			return m, nil
+		}
+		// Rpm downloaded - now run sudo rpm -Uvh via tea.ExecProcess
+		cmd := exec.Command("sudo", "rpm", "-Uvh", msg.rpmPath)
+		return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+			// Clean up temp file
+			os.Remove(msg.rpmPath)
+			if err != nil {
+				return updateDoneMsg{err: fmt.Errorf("rpm installation failed: %w", err)}
+			}
+			return updateDoneMsg{err: nil}
+		})
 
 	case updateDoneMsg:
 		if msg.err != nil {
 			m.err = msg.err
+			m.previousState = m.state
+			m.state = stateError
 		} else {
-			// Update successful - show message and quit so user can restart
-			m.err = fmt.Errorf("updated to %s - please restart", m.updateAvailable)
+			// Update successful - show success message
+			m.successMsg = fmt.Sprintf("Updated to %s - please restart", m.updateAvailable)
+			m.previousState = m.state
+			m.state = stateUpdateSuccess
 		}
-		m.state = stateList
 		return m, nil
 
 	case tea.MouseMsg:
@@ -354,6 +452,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleCustomCmdKeys(msg)
 		case stateError:
 			return m.handleErrorKeys(msg)
+		case stateConfirmUpdate:
+			return m.handleConfirmUpdateKeys(msg)
+		case stateUpdateSuccess:
+			return m.handleUpdateSuccessKeys(msg)
 		}
 	}
 

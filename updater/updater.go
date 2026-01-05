@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -24,6 +25,27 @@ const (
 type GitHubRelease struct {
 	TagName     string    `json:"tag_name"`
 	PublishedAt time.Time `json:"published_at"`
+}
+
+// IsPackageManaged checks if the binary was installed via a package manager
+func IsPackageManaged() bool {
+	// Check if installed via dpkg (Debian/Ubuntu)
+	if _, err := os.Stat("/var/lib/dpkg/info/asmgr.list"); err == nil {
+		return true
+	}
+
+	// Check if installed via rpm (RedHat/Fedora)
+	// Check for asmgr specifically in rpm database
+	if _, err := os.Stat("/var/lib/rpm"); err == nil {
+		// Try to verify with rpm command if available
+		execPath, _ := os.Executable()
+		if strings.HasPrefix(execPath, "/usr/") {
+			// Likely system-wide rpm install
+			return true
+		}
+	}
+
+	return false
 }
 
 // CheckForUpdate checks if a newer version is available
@@ -58,8 +80,155 @@ func CheckForUpdate(currentVersion string) string {
 	return ""
 }
 
+// DownloadDeb downloads the .deb package to /tmp and returns the path
+func DownloadDeb(version string) (string, error) {
+	arch := runtime.GOARCH
+	verNum := strings.TrimPrefix(version, "v")
+
+	// Map Go arch to deb arch
+	debArch := arch
+	if arch == "amd64" {
+		debArch = "amd64"
+	} else if arch == "arm64" {
+		debArch = "arm64"
+	}
+
+	filename := fmt.Sprintf("%s_%s_linux_%s.deb", BinaryName, verNum, debArch)
+	url := fmt.Sprintf("https://github.com/%s/%s/releases/download/%s/%s",
+		RepoOwner, RepoName, version, filename)
+
+	// Download to temp file
+	tmpFile := fmt.Sprintf("/tmp/%s", filename)
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("download failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
+	}
+
+	// Write to temp file
+	out, err := os.Create(tmpFile)
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		return "", fmt.Errorf("failed to save file: %w", err)
+	}
+
+	return tmpFile, nil
+}
+
+// DownloadAndInstallDeb downloads the .deb package and installs it via dpkg
+// This is called from background goroutine
+func DownloadAndInstallDeb(version string) error {
+	tmpFile, err := DownloadDeb(version)
+	if err != nil {
+		return err
+	}
+
+	// Install with dpkg via sudo
+	cmd := exec.Command("sudo", "dpkg", "-i", tmpFile)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		os.Remove(tmpFile)
+		return fmt.Errorf("dpkg installation failed: %w", err)
+	}
+
+	// Clean up
+	os.Remove(tmpFile)
+
+	return nil
+}
+
+// DownloadRpm downloads the .rpm package to /tmp and returns the path
+func DownloadRpm(version string) (string, error) {
+	arch := runtime.GOARCH
+	verNum := strings.TrimPrefix(version, "v")
+
+	// Map Go arch to rpm arch
+	rpmArch := arch
+	if arch == "amd64" {
+		rpmArch = "x86_64"
+	} else if arch == "arm64" {
+		rpmArch = "aarch64"
+	}
+
+	filename := fmt.Sprintf("%s_%s_linux_%s.rpm", BinaryName, verNum, rpmArch)
+	url := fmt.Sprintf("https://github.com/%s/%s/releases/download/%s/%s",
+		RepoOwner, RepoName, version, filename)
+
+	// Download to temp file
+	tmpFile := fmt.Sprintf("/tmp/%s", filename)
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("download failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
+	}
+
+	// Write to temp file
+	out, err := os.Create(tmpFile)
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		return "", fmt.Errorf("failed to save file: %w", err)
+	}
+
+	return tmpFile, nil
+}
+
+// DownloadAndInstallRpm downloads the .rpm package and installs it via rpm
+func DownloadAndInstallRpm(version string) error {
+	tmpFile, err := DownloadRpm(version)
+	if err != nil {
+		return err
+	}
+
+	// Install with rpm via sudo (rpm -Uvh = upgrade with verbose and hash marks)
+	cmd := exec.Command("sudo", "rpm", "-Uvh", tmpFile)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		os.Remove(tmpFile)
+		return fmt.Errorf("rpm installation failed: %w", err)
+	}
+
+	// Clean up
+	os.Remove(tmpFile)
+
+	return nil
+}
+
 // DownloadAndInstall downloads and installs the specified version
 func DownloadAndInstall(version string) error {
+	// Check if installed via package manager
+	if IsPackageManaged() {
+		// Check if dpkg - use deb update
+		if _, err := os.Stat("/var/lib/dpkg/info/asmgr.list"); err == nil {
+			return DownloadAndInstallDeb(version)
+		}
+		// Otherwise assume rpm
+		return DownloadAndInstallRpm(version)
+	}
+
 	osName := runtime.GOOS
 	arch := runtime.GOARCH
 
@@ -119,6 +288,18 @@ func DownloadAndInstall(version string) error {
 	if binaryData == nil {
 		return fmt.Errorf("binary not found in archive")
 	}
+
+	// Check if we have write permission to the directory
+	execDir := filepath.Dir(execPath)
+	testFile := filepath.Join(execDir, ".asmgr_update_test")
+	if err := os.WriteFile(testFile, []byte{}, 0644); err != nil {
+		// No write permission - probably installed system-wide
+		if strings.HasPrefix(execPath, "/usr/") {
+			return fmt.Errorf("system-wide installation detected - please update with: curl -fsSL https://raw.githubusercontent.com/izll/agent-session-manager/main/install.sh | sudo bash")
+		}
+		return fmt.Errorf("no write permission to %s - try reinstalling with write permissions to your user directory", execDir)
+	}
+	os.Remove(testFile)
 
 	// Write new binary
 	tmpPath := execPath + ".new"

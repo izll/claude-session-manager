@@ -62,8 +62,14 @@ func (m Model) View() string {
 		return m.customCmdView()
 	case stateError:
 		return m.errorView()
+	case stateConfirmUpdate:
+		return m.confirmUpdateView()
+	case stateCheckingUpdate:
+		return m.checkingUpdateView()
 	case stateUpdating:
 		return m.updatingView()
+	case stateUpdateSuccess:
+		return m.updateSuccessView()
 	default:
 		return m.listView()
 	}
@@ -1333,7 +1339,17 @@ func (m Model) buildPreviewPane(contentHeight int) string {
 	// Header with Preview title on left and version on right
 	previewWidth := m.calculatePreviewWidth()
 	title := titleStyle.Render(" Preview ")
-	version := dimStyle.Render(fmt.Sprintf("%s v%s ", AppName, AppVersion))
+
+	// Add update indicator if available
+	versionText := fmt.Sprintf("%s v%s", AppName, AppVersion)
+	if m.updateAvailable != "" {
+		updateIcon := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFD700")).
+			Render(" ↑")
+		versionText = versionText + updateIcon
+	}
+	version := dimStyle.Render(versionText + " ")
+
 	titleLen := lipgloss.Width(title)
 	versionLen := lipgloss.Width(version)
 	spacing := previewWidth - titleLen - versionLen
@@ -1760,19 +1776,6 @@ func (m Model) buildStatusBar() string {
 	}
 
 	statusText := strings.Join(items, sep)
-
-	// Add update notification if available
-	if m.updateAvailable != "" {
-		updateStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#000000")).
-			Background(lipgloss.Color("#FFD700")).
-			Bold(true).
-			Padding(0, 1)
-		updateNotice := updateStyle.Render("↑ " + m.updateAvailable + " available - press U to update")
-		return "\n" + lipgloss.PlaceHorizontal(m.width, lipgloss.Center, updateNotice) +
-			"\n" + lipgloss.PlaceHorizontal(m.width, lipgloss.Center, statusText)
-	}
-
 	return "\n" + lipgloss.PlaceHorizontal(m.width, lipgloss.Center, statusText)
 }
 
@@ -1970,7 +1973,7 @@ func (m Model) customCmdView() string {
 // errorView renders the error/info overlay dialog
 func (m Model) errorView() string {
 	var boxContent strings.Builder
-	boxContent.WriteString("\n")
+	boxContent.WriteString("\n\n")
 
 	errMsg := "Unknown error"
 	if m.err != nil {
@@ -2005,6 +2008,58 @@ func (m Model) errorView() string {
 	}
 
 	return m.renderOverlayDialogWithBackground(title, boxContent.String(), 60, color, background)
+}
+
+// updateSuccessView renders the success message after update
+func (m Model) updateSuccessView() string {
+	var boxContent strings.Builder
+	boxContent.WriteString("\n\n")
+
+	title := " Success "
+	color := "#04B575" // Green
+	textColor := "#04B575"
+
+	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(textColor))
+	boxContent.WriteString(textStyle.Render(fmt.Sprintf("  %s", m.successMsg)))
+	boxContent.WriteString("\n")
+	boxContent.WriteString(helpStyle.Render("  Press any key to close"))
+	boxContent.WriteString("\n")
+
+	// Use appropriate background based on previous state
+	var background string
+	switch m.previousState {
+	case stateProjectSelect, stateNewProject, stateRenameProject, stateConfirmDeleteProject, stateConfirmImport:
+		background = m.projectSelectView()
+	default:
+		background = m.listView()
+	}
+
+	return m.renderOverlayDialogWithBackground(title, boxContent.String(), 60, color, background)
+}
+
+// confirmUpdateView renders the update confirmation dialog
+func (m Model) confirmUpdateView() string {
+	var boxContent strings.Builder
+	boxContent.WriteString("\n")
+	if m.updateAvailable != "" {
+		boxContent.WriteString(fmt.Sprintf("  Update to %s?\n\n", m.updateAvailable))
+	} else {
+		boxContent.WriteString("  Check for updates?\n\n")
+	}
+	boxContent.WriteString(helpStyle.Render("  y: yes  n: no"))
+	boxContent.WriteString("\n")
+
+	return m.renderOverlayDialog(" Update ", boxContent.String(), 40, "#FFB86C")
+}
+
+// checkingUpdateView renders the "checking for updates" message
+func (m Model) checkingUpdateView() string {
+	var boxContent strings.Builder
+	boxContent.WriteString("\n")
+	boxContent.WriteString("  Checking for updates...\n")
+	boxContent.WriteString("\n")
+
+	return m.renderOverlayDialog(" Update ", boxContent.String(), 40, "#FFB86C")
 }
 
 // projectSelectView renders the project selection screen

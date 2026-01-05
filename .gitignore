@@ -8,6 +8,9 @@ CLAUDE.md
 # Demo files (entire directory excluded)
 demos/
 
+# Test builds
+test-builds/
+
 # Claude Code local settings
 .claude/
 
