@@ -274,6 +274,11 @@ func GetClaudeStatusLine(lines []string, stripANSIFunc func(string) string) stri
 				continue
 			}
 
+			// Skip tip lines
+			if strings.HasPrefix(cleanLine, "└") || strings.HasPrefix(cleanLine, "Tip:") {
+				continue
+			}
+
 			// Found actual content above input area
 			return line
 		}

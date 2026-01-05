@@ -264,7 +264,7 @@ func (m Model) helpView() string {
 		{"← Left", "Collapse an expanded group"},
 		{"l Compact", "Toggle compact view (less spacing between sessions)"},
 		{"t Status", "Toggle status line visibility under sessions"},
-		{"y AutoYes", "Toggle --dangerously-skip-permissions flag"},
+		{"^Y Yolo", "Toggle auto-approve/yolo mode on selected session (restarts if running)"},
 		{"v Split", "Toggle split view to show two previews"},
 		{"m Mark", "Mark session for split view (pinned on top)"},
 		{"⇥ Tab", "Switch focus between split panels"},
@@ -786,8 +786,20 @@ func (m Model) promptView() string {
 	}
 
 	boxContent.WriteString("  Message:\n")
-	boxContent.WriteString("  > " + m.promptInput.View() + "\n\n")
-	boxContent.WriteString(helpStyle.Render("  enter: send  esc: cancel"))
+	boxContent.WriteString("  > " + m.promptInput.View() + "\n")
+
+	// Show suggestion if available and input is empty
+	if m.promptSuggestion != "" && m.promptInput.Value() == "" {
+		suggestionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Italic(true)
+		boxContent.WriteString(suggestionStyle.Render(fmt.Sprintf("    → %s", m.promptSuggestion)) + "\n")
+	}
+
+	boxContent.WriteString("\n")
+	helpText := "  enter: send  esc: cancel"
+	if m.promptSuggestion != "" {
+		helpText = "  tab: accept  enter: send  esc: cancel"
+	}
+	boxContent.WriteString(helpStyle.Render(helpText))
 	boxContent.WriteString("\n")
 
 	boxWidth := 60
@@ -981,13 +993,16 @@ func (m Model) buildSessionListPane(listWidth, contentHeight int) string {
 	leftPane.WriteString("\n")
 
 	// Count session statuses
-	var active, idle, stopped int
+	var active, waiting, idle, stopped int
 	for _, inst := range m.instances {
 		switch inst.Status {
 		case session.StatusRunning:
-			if m.isActive[inst.ID] {
+			switch m.activityState[inst.ID] {
+			case session.ActivityBusy:
 				active++
-			} else {
+			case session.ActivityWaiting:
+				waiting++
+			default:
 				idle++
 			}
 		case session.StatusStopped:
@@ -1002,8 +1017,9 @@ func (m Model) buildSessionListPane(listWidth, contentHeight int) string {
 	}
 	header := titleStyle.Render(headerText)
 	if len(m.instances) > 0 {
-		counts := fmt.Sprintf(" %s %d %s %d %s %d",
+		counts := fmt.Sprintf(" %s %d %s %d %s %d %s %d",
 			activeStyle.Render("●"), active,
+			waitingStyle.Render("●"), waiting,
 			idleStyle.Render("●"), idle,
 			stoppedStyle.Render("○"), stopped)
 		header += dimStyle.Render(counts)
@@ -1066,13 +1082,16 @@ func (m *Model) buildGroupedSessionListPane(listWidth, contentHeight int) string
 	leftPane.WriteString("\n")
 
 	// Count session statuses
-	var active, idle, stopped int
+	var active, waiting, idle, stopped int
 	for _, inst := range m.instances {
 		switch inst.Status {
 		case session.StatusRunning:
-			if m.isActive[inst.ID] {
+			switch m.activityState[inst.ID] {
+			case session.ActivityBusy:
 				active++
-			} else {
+			case session.ActivityWaiting:
+				waiting++
+			default:
 				idle++
 			}
 		case session.StatusStopped:
@@ -1087,8 +1106,9 @@ func (m *Model) buildGroupedSessionListPane(listWidth, contentHeight int) string
 	}
 	header := titleStyle.Render(headerText)
 	if len(m.instances) > 0 {
-		counts := fmt.Sprintf(" %s %d %s %d %s %d",
+		counts := fmt.Sprintf(" %s %d %s %d %s %d %s %d",
 			activeStyle.Render("●"), active,
+			waitingStyle.Render("●"), waiting,
 			idleStyle.Render("●"), idle,
 			stoppedStyle.Render("○"), stopped)
 		header += dimStyle.Render(counts)
@@ -1420,7 +1440,14 @@ func (m Model) buildPreviewPane(contentHeight int) string {
 	case session.AgentCustom:
 		agentName = "Custom"
 	}
-	rightPane.WriteString(dimStyle.Render(fmt.Sprintf("  Agent: %s", agentName)))
+	agentLine := fmt.Sprintf("  Agent: %s", agentName)
+	// Show yolo mode for Claude on same line
+	if (inst.Agent == session.AgentClaude || inst.Agent == "") && inst.AutoYes {
+		yoloStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFA500"))
+		rightPane.WriteString(dimStyle.Render(agentLine) + yoloStyle.Render(" ! YOLO"))
+	} else {
+		rightPane.WriteString(dimStyle.Render(agentLine))
+	}
 	rightPane.WriteString("\n")
 
 	// Calculate actual header height: Initial(1) + Title(1) + blank(1) + Path(1) + Agent(1) = 5 base + 1 buffer
@@ -1734,7 +1761,7 @@ func (m Model) buildStatusBar() string {
 		statusLinesStatus = offStyle.Render("OFF")
 	}
 	autoYesStatus := offStyle.Render("OFF")
-	if m.autoYes {
+	if inst := m.getSelectedInstance(); inst != nil && inst.AutoYes {
 		autoYesStatus = onStyle.Render("ON")
 	}
 	splitStatus := offStyle.Render("OFF")
@@ -1744,7 +1771,7 @@ func (m Model) buildStatusBar() string {
 	p5 := []string{
 		keyStyle.Render("l") + descStyle.Render(" compact ") + compactStatus,
 		keyStyle.Render("t") + descStyle.Render(" status ") + statusLinesStatus,
-		keyStyle.Render("y") + descStyle.Render(" autoyes ") + autoYesStatus,
+		keyStyle.Render("^Y") + descStyle.Render(" yolo ") + autoYesStatus,
 		keyStyle.Render("v") + descStyle.Render(" split ") + splitStatus,
 	}
 

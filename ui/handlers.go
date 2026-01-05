@@ -273,11 +273,13 @@ func (m *Model) handleEnterSession() tea.Cmd {
 		// Check if command exists before starting
 		if err := session.CheckAgentCommand(inst); err != nil {
 			m.err = err
+			m.previousState = stateList
 			m.state = stateError
 			return nil
 		}
 		if err := inst.Start(); err != nil {
 			m.err = err
+			m.previousState = stateList
 			m.state = stateError
 			return nil
 		}
@@ -347,11 +349,13 @@ func (m *Model) handleStartSession() {
 		// Check if command exists before starting
 		if err := session.CheckAgentCommand(inst); err != nil {
 			m.err = err
+			m.previousState = stateList
 			m.state = stateError
 			return
 		}
 		if err := inst.Start(); err != nil {
 			m.err = err
+			m.previousState = stateList
 			m.state = stateError
 		} else {
 			m.storage.UpdateInstance(inst)
@@ -432,6 +436,7 @@ func (m *Model) handleSendPrompt() {
 	}
 	if inst.Status != session.StatusRunning {
 		m.err = fmt.Errorf("session not running")
+		m.previousState = stateList
 		m.state = stateError
 		return
 	}
@@ -445,6 +450,10 @@ func (m *Model) handleSendPrompt() {
 	}
 	m.promptInput.Width = inputWidth
 	m.promptInput.Focus()
+
+	// Get suggestion from agent
+	m.promptSuggestion = inst.GetSuggestion()
+
 	m.state = statePrompt
 }
 
@@ -457,8 +466,64 @@ func (m *Model) handleForceResize() {
 	tmuxWidth, tmuxHeight := m.calculateTmuxDimensions()
 	if err := inst.ResizePane(tmuxWidth, tmuxHeight); err != nil {
 		m.err = fmt.Errorf("failed to resize pane: %w", err)
+		m.previousState = stateList
 		m.state = stateError
 	}
+}
+
+// handleToggleAutoYes toggles the auto-yes flag on the selected session
+// Returns a tea.Cmd to attach to the session if it was restarted
+func (m *Model) handleToggleAutoYes() tea.Cmd {
+	inst := m.getSelectedInstance()
+	if inst == nil {
+		return nil
+	}
+
+	// Get agent type (empty string means Claude for backward compatibility)
+	agentType := inst.Agent
+	if agentType == "" {
+		agentType = session.AgentClaude
+	}
+
+	// Special handling for Gemini - send Ctrl+Y keystroke instead
+	if agentType == session.AgentGemini {
+		if inst.Status == session.StatusRunning {
+			if err := inst.SendKeys("C-y"); err != nil {
+				m.err = fmt.Errorf("failed to send Ctrl+Y: %w", err)
+				m.previousState = stateList
+				m.state = stateError
+			}
+		}
+		return nil
+	}
+
+	// Check if agent supports AutoYes
+	config := session.AgentConfigs[agentType]
+	if !config.SupportsAutoYes {
+		m.err = fmt.Errorf("yolo mode not supported for %s agent", agentType)
+		m.previousState = stateList
+		m.state = stateError
+		return nil
+	}
+
+	// Toggle AutoYes
+	wasRunning := inst.Status == session.StatusRunning
+	inst.AutoYes = !inst.AutoYes
+	m.storage.UpdateInstance(inst)
+
+	// If running, restart with new flag (no auto-attach in list view)
+	if wasRunning {
+		inst.Stop()
+		if err := inst.Start(); err != nil {
+			m.err = fmt.Errorf("failed to restart session: %w", err)
+			m.previousState = stateList
+			m.state = stateError
+			return nil
+		}
+		m.storage.UpdateInstance(inst)
+	}
+
+	return nil
 }
 
 // handleListKeys handles keyboard input in the main list view
@@ -651,8 +716,10 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = stateConfirmDelete
 		}
 
-	case "y":
-		m.autoYes = !m.autoYes
+	case "ctrl+y":
+		if cmd := m.handleToggleAutoYes(); cmd != nil {
+			return m, cmd
+		}
 
 	case "e":
 		// Check if a group is selected
@@ -838,6 +905,7 @@ func (m Model) handleNewNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// Check if command exists before starting
 				if err := session.CheckAgentCommand(inst); err != nil {
 					m.err = err
+					m.previousState = stateList
 					m.state = stateError
 					m.isParallelSession = false
 					m.pendingInstance = nil
@@ -857,6 +925,7 @@ func (m Model) handleNewNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// Start the new instance
 				if err := inst.Start(); err != nil {
 					m.err = err
+					m.previousState = stateList
 					m.state = stateError
 				} else {
 					m.storage.Save(m.instances)
@@ -956,6 +1025,8 @@ func (m Model) handleNewNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Auto-start the new instance
 			if err := inst.Start(); err != nil {
 				m.err = err
+				m.previousState = stateList
+				m.state = stateError
 			} else {
 				m.storage.UpdateInstance(inst)
 			}
@@ -1164,6 +1235,7 @@ func (m Model) handleConfirmStartKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Check if command exists before starting
 			if err := session.CheckAgentCommand(inst); err != nil {
 				m.err = err
+				m.previousState = stateList
 				m.state = stateError
 				return m, nil
 			}
@@ -1171,6 +1243,7 @@ func (m Model) handleConfirmStartKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Start completely new session (no resume)
 			if err := inst.Start(); err != nil {
 				m.err = err
+				m.previousState = stateList
 				m.state = stateError
 			} else {
 				m.storage.UpdateInstance(inst)
@@ -1197,6 +1270,7 @@ func (m Model) handleSelectStartModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			newInst, err := session.NewInstance(inst.Name, inst.Path, inst.AutoYes, inst.Agent)
 			if err != nil {
 				m.err = err
+				m.previousState = stateList
 				m.state = stateError
 				return m, nil
 			}
@@ -1277,6 +1351,13 @@ func (m Model) handlePromptKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		m.state = stateList
 		return m, nil
+	case "tab":
+		// Accept suggestion if available and input is empty
+		if m.promptSuggestion != "" && m.promptInput.Value() == "" {
+			m.promptInput.SetValue(m.promptSuggestion)
+			m.promptInput.CursorEnd()
+			return m, nil
+		}
 	case "enter":
 		if m.promptInput.Value() != "" {
 			if inst := m.getSelectedInstance(); inst != nil && inst.Status == session.StatusRunning {

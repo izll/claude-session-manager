@@ -28,7 +28,7 @@ type rpmDownloadDoneMsg struct {
 // Version info
 const (
 	AppName    = "asmgr"
-	AppVersion = "0.3.8"
+	AppVersion = "0.4.0"
 )
 
 // Layout constants
@@ -100,6 +100,7 @@ type Model struct {
 	nameInput       textinput.Model
 	pathInput       textinput.Model
 	promptInput     textinput.Model           // Input for sending text to session
+	promptSuggestion string                    // Autocomplete suggestion from agent
 	autoYes         bool
 	deleteTarget    *session.Instance
 	preview         string

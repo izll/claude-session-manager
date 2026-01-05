@@ -18,20 +18,25 @@ const (
 var busyPatterns = []string{
 	"esc to interrupt",
 	"tokens",
+	"Generating",
 }
 
-// Waiting patterns (case insensitive)
+// Waiting patterns (case insensitive) - common for all agents
 var waitingPatterns = []string{
 	"allow once",
 	"allow always",
 	"yes, allow",
 	"no, and tell",
-	"? for shortcuts",
 	"esc to cancel",
 	"do you want to proceed",
 	"waiting for user",
 	"waiting for tool",
 	"apply this change",
+}
+
+// Claude-specific waiting patterns
+var claudeWaitingPatterns = []string{
+	"? for shortcuts",
 }
 
 // Spinner characters (braille dots)
@@ -75,16 +80,36 @@ func detectClaudeActivity(lines []string) SessionActivity {
 	}
 
 	var inputAreaLines []string
+	var aboveSeparatorLines []string // Lines above top separator (for thinking state)
 
 	if len(separatorIndices) >= 2 {
 		// Normal mode: 2 separators, check between them
 		topSepIdx := separatorIndices[len(separatorIndices)-2]
 		bottomSepIdx := separatorIndices[len(separatorIndices)-1]
 
+		// Count non-empty lines between separators
+		contentCount := 0
 		for idx := topSepIdx + 1; idx < bottomSepIdx; idx++ {
 			cleanLine := strings.TrimSpace(stripANSIForDetect(lines[idx]))
 			if cleanLine != "" {
 				inputAreaLines = append(inputAreaLines, cleanLine)
+				contentCount++
+			}
+		}
+
+		// If only prompt line (or empty), check content ABOVE top separator
+		// This is where Claude shows spinner and "esc to interrupt" during thinking
+		if contentCount <= 1 {
+			for j := topSepIdx - 1; j >= 0 && j >= topSepIdx-15; j-- {
+				cleanLine := strings.TrimSpace(stripANSIForDetect(lines[j]))
+				if cleanLine != "" {
+					// Skip UI elements and tips
+					if strings.HasPrefix(cleanLine, "╭") || strings.HasPrefix(cleanLine, "╰") ||
+						strings.HasPrefix(cleanLine, "└") || strings.HasPrefix(cleanLine, "Tip:") {
+						continue
+					}
+					aboveSeparatorLines = append(aboveSeparatorLines, cleanLine)
+				}
 			}
 		}
 	} else if len(separatorIndices) == 1 {
@@ -106,11 +131,21 @@ func detectClaudeActivity(lines []string) SessionActivity {
 		}
 	}
 
-	// Check input area for patterns
+	// Combine lines to check - input area has priority, then above separator
+	allLinesToCheck := append(inputAreaLines, aboveSeparatorLines...)
+
+	// Check for patterns
 	// First pass: check for waiting patterns (higher priority)
-	for _, line := range inputAreaLines {
+	for _, line := range allLinesToCheck {
 		lineLower := strings.ToLower(line)
+		// Common waiting patterns
 		for _, pattern := range waitingPatterns {
+			if strings.Contains(lineLower, pattern) {
+				return ActivityWaiting
+			}
+		}
+		// Claude-specific waiting patterns
+		for _, pattern := range claudeWaitingPatterns {
 			if strings.Contains(lineLower, pattern) {
 				return ActivityWaiting
 			}
@@ -118,7 +153,7 @@ func detectClaudeActivity(lines []string) SessionActivity {
 	}
 
 	// Second pass: check for busy patterns
-	for _, line := range inputAreaLines {
+	for _, line := range allLinesToCheck {
 		for _, pattern := range busyPatterns {
 			if strings.Contains(line, pattern) {
 				return ActivityBusy
