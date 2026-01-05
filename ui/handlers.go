@@ -532,10 +532,21 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.err = nil
 
 	switch msg.String() {
-	case "q", "ctrl+c":
+	case "ctrl+c":
 		m.saveSettings() // Save cursor position on quit
 		m.storage.UnlockProject()
 		return m, tea.Quit
+
+	case "q":
+		// Go back to project selector
+		m.saveSettings()
+		m.storage.UnlockProject()
+		// Reload projects to refresh session counts
+		projectsData, _ := m.storage.LoadProjects()
+		m.projects = projectsData.Projects
+		m.state = stateProjectSelect
+		m.projectCursor = 0
+		return m, nil
 
 	case "up", "k":
 		// In split view with focus on pinned: change pinned session
@@ -961,7 +972,8 @@ func (m Model) handleNewNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			inst, err := session.NewInstance(m.nameInput.Value(), m.pathInput.Value(), m.autoYes, m.pendingAgent)
 			if err != nil {
 				m.err = err
-				m.state = stateList
+				m.previousState = stateList
+				m.state = stateError
 				return m, nil
 			}
 
@@ -978,7 +990,8 @@ func (m Model) handleNewNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Check if the agent command exists before creating session
 			if err := session.CheckAgentCommand(inst); err != nil {
 				m.err = err
-				m.state = stateList
+				m.previousState = stateList
+				m.state = stateError
 				return m, nil
 			}
 
@@ -1018,7 +1031,8 @@ func (m Model) handleNewNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// No existing sessions or agent doesn't support resume, just create new
 			if err := m.storage.AddInstance(inst); err != nil {
 				m.err = err
-				m.state = stateList
+				m.previousState = stateList
+				m.state = stateError
 				return m, nil
 			}
 
@@ -1140,7 +1154,8 @@ func (m Model) handleSelectSessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			if err := m.storage.AddInstance(inst); err != nil {
 				m.err = err
-				m.state = stateList
+				m.previousState = stateList
+				m.state = stateError
 				m.pendingInstance = nil
 				m.agentSessions = nil
 				return m, nil

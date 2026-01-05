@@ -112,17 +112,6 @@ func (m Model) listView() string {
 	var b strings.Builder
 	b.WriteString(content)
 
-	// Error display - only show in list state (dialogs show their own errors)
-	if m.err != nil && m.state == stateList {
-		errBox := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(lipgloss.Color("#FF0000")).
-			Bold(true).
-			Padding(0, 2).
-			Render(fmt.Sprintf(" ⚠ Error: %v ", m.err))
-		b.WriteString("\n" + errBox + "\n")
-	}
-
 	// Status bar
 	b.WriteString(m.buildStatusBar())
 
@@ -990,7 +979,6 @@ func (m Model) getLastLine(inst *session.Instance) string {
 // buildSessionListPane builds the left pane containing the session list
 func (m Model) buildSessionListPane(listWidth, contentHeight int) string {
 	var leftPane strings.Builder
-	leftPane.WriteString("\n")
 
 	// Count session statuses
 	var active, waiting, idle, stopped int
@@ -1010,12 +998,8 @@ func (m Model) buildSessionListPane(listWidth, contentHeight int) string {
 		}
 	}
 
-	// Build header with project name and status counts
-	headerText := " Sessions "
-	if m.activeProject != nil {
-		headerText = fmt.Sprintf(" %s ", m.activeProject.Name)
-	}
-	header := titleStyle.Render(headerText)
+	// Build header with status counts
+	header := titleStyle.Render(" Sessions ")
 	if len(m.instances) > 0 {
 		counts := fmt.Sprintf(" %s %d %s %d %s %d %s %d",
 			activeStyle.Render("●"), active,
@@ -1025,7 +1009,25 @@ func (m Model) buildSessionListPane(listWidth, contentHeight int) string {
 		header += dimStyle.Render(counts)
 	}
 	leftPane.WriteString(header)
-	leftPane.WriteString("\n\n")
+	leftPane.WriteString("\n")
+	leftPane.WriteString(dimStyle.Render(strings.Repeat("─", listWidth)))
+	leftPane.WriteString("\n")
+
+	// Show project name if active project exists
+	if m.activeProject != nil {
+		projectName := m.activeProject.Name
+		maxLen := listWidth - 12
+		if len(projectName) > maxLen {
+			projectName = projectName[:maxLen-1] + "…"
+		}
+		labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF"))
+		nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA"))
+		leftPane.WriteString(labelStyle.Render(" Project: ") + nameStyle.Render(projectName))
+		leftPane.WriteString("\n")
+		leftPane.WriteString(dimStyle.Render(strings.Repeat("─", listWidth)))
+		leftPane.WriteString("\n")
+	}
+	leftPane.WriteString("\n")
 
 	if len(m.instances) == 0 && len(m.groups) == 0 {
 		leftPane.WriteString(" No sessions\n")
@@ -1079,7 +1081,6 @@ func (m Model) buildSessionListPane(listWidth, contentHeight int) string {
 // buildGroupedSessionListPane builds the session list with groups
 func (m *Model) buildGroupedSessionListPane(listWidth, contentHeight int) string {
 	var leftPane strings.Builder
-	leftPane.WriteString("\n")
 
 	// Count session statuses
 	var active, waiting, idle, stopped int
@@ -1099,12 +1100,8 @@ func (m *Model) buildGroupedSessionListPane(listWidth, contentHeight int) string
 		}
 	}
 
-	// Build header with project name and status counts
-	headerText := " Sessions "
-	if m.activeProject != nil {
-		headerText = fmt.Sprintf(" %s ", m.activeProject.Name)
-	}
-	header := titleStyle.Render(headerText)
+	// Build header with status counts
+	header := titleStyle.Render(" Sessions ")
 	if len(m.instances) > 0 {
 		counts := fmt.Sprintf(" %s %d %s %d %s %d %s %d",
 			activeStyle.Render("●"), active,
@@ -1114,7 +1111,25 @@ func (m *Model) buildGroupedSessionListPane(listWidth, contentHeight int) string
 		header += dimStyle.Render(counts)
 	}
 	leftPane.WriteString(header)
-	leftPane.WriteString("\n\n")
+	leftPane.WriteString("\n")
+	leftPane.WriteString(dimStyle.Render(strings.Repeat("─", listWidth)))
+	leftPane.WriteString("\n")
+
+	// Show project name if active project exists
+	if m.activeProject != nil {
+		projectName := m.activeProject.Name
+		maxLen := listWidth - 12
+		if len(projectName) > maxLen {
+			projectName = projectName[:maxLen-1] + "…"
+		}
+		labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF"))
+		nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA"))
+		leftPane.WriteString(labelStyle.Render(" Project: ") + nameStyle.Render(projectName))
+		leftPane.WriteString("\n")
+		leftPane.WriteString(dimStyle.Render(strings.Repeat("─", listWidth)))
+		leftPane.WriteString("\n")
+	}
+	leftPane.WriteString("\n")
 
 	// Build visible items
 	m.buildVisibleItems()
@@ -1368,7 +1383,6 @@ func (m Model) renderSelectedRowContent(inst *session.Instance, name string, max
 // buildPreviewPane builds the right pane containing the preview
 func (m Model) buildPreviewPane(contentHeight int) string {
 	var rightPane strings.Builder
-	rightPane.WriteString("\n")
 
 	// Header with Preview title on left and version on right
 	previewWidth := m.calculatePreviewWidth()
@@ -1391,6 +1405,8 @@ func (m Model) buildPreviewPane(contentHeight int) string {
 		spacing = 1
 	}
 	rightPane.WriteString(title + strings.Repeat(" ", spacing) + version)
+	rightPane.WriteString("\n")
+	rightPane.WriteString(dimStyle.Render(strings.Repeat("─", previewWidth)))
 	rightPane.WriteString("\n\n")
 
 	// Get selected instance (handles both grouped and ungrouped modes)
@@ -2135,22 +2151,21 @@ func (m Model) projectSelectView() string {
 	var content strings.Builder
 
 	// Projects first
+	projectNameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Bold(true)
 	for i, project := range m.projects {
 		sessionCount := m.storage.GetProjectSessionCount(project.ID)
-		countStr := fmt.Sprintf("[%d sessions]", sessionCount)
+		countStr := fmt.Sprintf("[%d]", sessionCount)
 
-		line := fmt.Sprintf("  %s", project.Name)
 		// Pad to align counts
-		padding := boxWidth - len(line) - len(countStr) - 4
+		padding := boxWidth - len(project.Name) - len(countStr) - 6
 		if padding < 1 {
 			padding = 1
 		}
 
 		if i == m.projectCursor {
-			style := listSelectedStyle
-			content.WriteString(style.Render(fmt.Sprintf("> %s%s%s", project.Name, strings.Repeat(" ", padding), countStr)))
+			content.WriteString(listSelectedStyle.Render(fmt.Sprintf("> %s%s%s", project.Name, strings.Repeat(" ", padding), countStr)))
 		} else {
-			content.WriteString(fmt.Sprintf("  %s%s%s", project.Name, strings.Repeat(" ", padding), dimStyle.Render(countStr)))
+			content.WriteString(fmt.Sprintf("  %s%s%s", projectNameStyle.Render(project.Name), strings.Repeat(" ", padding), dimStyle.Render(countStr)))
 		}
 		content.WriteString("\n")
 	}
@@ -2163,10 +2178,17 @@ func (m Model) projectSelectView() string {
 
 	// Continue without project option (after projects)
 	continueIdx := len(m.projects)
+	defaultCount := m.storage.GetProjectSessionCount("")
+	defaultCountStr := fmt.Sprintf("[%d]", defaultCount)
+	defaultText := "No project"
+	defaultPadding := boxWidth - len(defaultText) - len(defaultCountStr) - 10
+	if defaultPadding < 1 {
+		defaultPadding = 1
+	}
 	if m.projectCursor == continueIdx {
-		content.WriteString(listSelectedStyle.Render("> [ ] Continue without project"))
+		content.WriteString(listSelectedStyle.Render(fmt.Sprintf("> [ ] %s%s%s", defaultText, strings.Repeat(" ", defaultPadding), defaultCountStr)))
 	} else {
-		content.WriteString("  [ ] Continue without project")
+		content.WriteString(fmt.Sprintf("  [ ] %s%s%s", defaultText, strings.Repeat(" ", defaultPadding), dimStyle.Render(defaultCountStr)))
 	}
 	content.WriteString("\n")
 
