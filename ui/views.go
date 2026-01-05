@@ -36,6 +36,8 @@ func (m Model) View() string {
 		return m.helpView()
 	case stateConfirmDelete:
 		return m.confirmDeleteView()
+	case stateSelectStartMode:
+		return m.selectStartModeView()
 	case stateConfirmStart:
 		return m.confirmStartView()
 	case stateNewName, stateNewPath:
@@ -185,7 +187,7 @@ func (m Model) helpView() string {
 		keyStyle.Render("↵") + descStyle.Render(" attach"),
 		keyStyle.Render("n") + descStyle.Render(" new"),
 		keyStyle.Render("s") + descStyle.Render(" start"),
-		keyStyle.Render("a") + descStyle.Render(" auto-start"),
+		keyStyle.Render("a") + descStyle.Render(" replace/start"),
 		keyStyle.Render("x") + descStyle.Render(" stop"),
 		keyStyle.Render("d") + descStyle.Render(" delete"),
 		keyStyle.Render("e") + descStyle.Render(" rename"),
@@ -246,7 +248,7 @@ func (m Model) helpView() string {
 		{"↵ Enter", "Start session (if stopped) and attach to tmux session"},
 		{"n New", "Create a new agent session with project path"},
 		{"s Start", "Start session in background without attaching"},
-		{"a Auto-start", "Start NEW session with confirmation (stops current if running)"},
+		{"a Replace/Start", "Replace current session OR start parallel session"},
 		{"r Resume", "Continue a previous session or start new"},
 		{"p Prompt", "Send a message to running session without attaching"},
 		{"c Color", "Customize session with colors and gradients"},
@@ -297,13 +299,60 @@ func (m Model) helpView() string {
 	b.WriteString(infoStyle.Render("  Built with Bubble Tea • github.com/izll/agent-session-manager"))
 	b.WriteString("\n\n")
 
-	// Footer
+	// Get all content lines
+	allContent := b.String()
+	allLines := strings.Split(allContent, "\n")
+
+	// Calculate visible area
+	maxLines := m.height - 3 // -3 for footer and margins
+	if maxLines < 10 {
+		maxLines = 10
+	}
+
+	// Apply scroll
+	startIdx := m.helpScroll
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	endIdx := startIdx + maxLines
+	if endIdx > len(allLines) {
+		endIdx = len(allLines)
+		startIdx = endIdx - maxLines
+		if startIdx < 0 {
+			startIdx = 0
+		}
+	}
+
+	// Build visible content
+	var visible strings.Builder
+	for i := startIdx; i < endIdx && i < len(allLines); i++ {
+		visible.WriteString(allLines[i])
+		visible.WriteString("\n")
+	}
+
+	// Footer with scroll indicator
+	scrollInfo := ""
+	if len(allLines) > maxLines {
+		if startIdx > 0 {
+			scrollInfo = "↑ "
+		}
+		scrollInfo += fmt.Sprintf("Line %d-%d of %d", startIdx+1, endIdx, len(allLines))
+		if endIdx < len(allLines) {
+			scrollInfo += " ↓"
+		}
+	}
 	footer := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#666666")).
-		Render("Press ESC, ? or F1 to close")
-	b.WriteString(lipgloss.PlaceHorizontal(m.width, lipgloss.Center, footer))
+		Render("Press ESC, ? or F1 to close" +
+			func() string {
+				if scrollInfo != "" {
+					return " • " + scrollInfo
+				}
+				return ""
+			}())
+	visible.WriteString(lipgloss.PlaceHorizontal(m.width, lipgloss.Center, footer))
 
-	return b.String()
+	return visible.String()
 }
 
 // confirmDeleteView renders the delete confirmation dialog as an overlay
@@ -335,6 +384,25 @@ func (m Model) confirmStartView() string {
 	boxContent.WriteString("\n")
 
 	return m.renderOverlayDialog(" Start New Session ", boxContent.String(), 50, "#87D7FF")
+}
+
+// selectStartModeView renders the start mode selection dialog
+func (m Model) selectStartModeView() string {
+	var boxContent strings.Builder
+	boxContent.WriteString("\n")
+	if inst := m.getSelectedInstance(); inst != nil {
+		boxContent.WriteString(fmt.Sprintf("  Start mode for '%s':\n\n", inst.Name))
+		boxContent.WriteString("  1/r: Replace current session\n")
+		boxContent.WriteString(helpStyle.Render("       (stop current, start fresh)"))
+		boxContent.WriteString("\n\n")
+		boxContent.WriteString("  2/n: Start parallel session\n")
+		boxContent.WriteString(helpStyle.Render("       (new instance below current)"))
+		boxContent.WriteString("\n\n")
+	}
+	boxContent.WriteString(helpStyle.Render("  esc: cancel"))
+	boxContent.WriteString("\n")
+
+	return m.renderOverlayDialog(" Start Session ", boxContent.String(), 50, "#87D7FF")
 }
 
 // newInstanceView renders the new session creation dialog as an overlay
@@ -1387,7 +1455,13 @@ func (m Model) buildPreviewPane(contentHeight int) string {
 	}
 
 	for i := startIdx; i < endIdx; i++ {
-		rightPane.WriteString("  " + lines[i] + "\x1b[0m\n")
+		line := lines[i]
+		// Truncate to available width (previewWidth - 2 for left margin)
+		maxWidth := previewWidth - 2
+		if displayWidth(line) > maxWidth {
+			line = truncateToWidth(line, maxWidth)
+		}
+		rightPane.WriteString("  " + line + "\x1b[0m\n")
 	}
 
 	// Show scroll indicator at bottom if scrolled
@@ -1540,7 +1614,13 @@ func (m Model) buildMiniPreview(inst *session.Instance, height, width int, label
 
 	displayedLines := 0
 	for i := startIdx; i < endIdx && displayedLines < maxLines; i++ {
-		preview.WriteString("  " + lines[i] + "\x1b[0m\n")
+		line := lines[i]
+		// Truncate to available width (width - 2 for left margin)
+		maxWidth := width - 2
+		if displayWidth(line) > maxWidth {
+			line = truncateToWidth(line, maxWidth)
+		}
+		preview.WriteString("  " + line + "\x1b[0m\n")
 		displayedLines++
 	}
 
@@ -1595,6 +1675,7 @@ func (m Model) buildStatusBar() string {
 	// P2: Common actions
 	p2 := []string{
 		keyStyle.Render("s") + descStyle.Render(" start"),
+		keyStyle.Render("a") + descStyle.Render(" replace/start"),
 		keyStyle.Render("x") + descStyle.Render(" stop"),
 		keyStyle.Render("d") + descStyle.Render(" delete"),
 		keyStyle.Render("p") + descStyle.Render(" prompt"),

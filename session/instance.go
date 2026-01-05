@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/izll/agent-session-manager/session/filters"
+	"github.com/mattn/go-runewidth"
 )
 
 // ansiRegex matches ANSI escape sequences
@@ -425,15 +426,59 @@ func (i *Instance) GetPreview(lines int) (string, error) {
 	sessionName := i.TmuxSessionName()
 	// Capture pane with scrollback history (-S for start line, -E for end)
 	// -S -lines means start from 'lines' back in history
-	// -e preserves colors
+	// -e preserves colors, -J joins wrapped lines
 	startLine := fmt.Sprintf("-%d", lines)
-	cmd := exec.Command("tmux", "capture-pane", "-t", sessionName, "-p", "-e", "-S", startLine)
+	cmd := exec.Command("tmux", "capture-pane", "-t", sessionName, "-p", "-e", "-J", "-S", startLine)
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to capture pane: %w", err)
 	}
 
-	return strings.TrimRight(string(output), "\n"), nil
+	// Post-process to remove extra spaces after wide characters (emojis)
+	// This is needed because tmux -J flag adds padding after wide chars
+	result := removeWideCharPadding(string(output))
+	return strings.TrimRight(result, "\n"), nil
+}
+
+// removeWideCharPadding removes extra spaces after wide characters (emojis)
+// that tmux -J flag adds when capturing panes
+func removeWideCharPadding(s string) string {
+	runes := []rune(s)
+	var result []rune
+	i := 0
+
+	for i < len(runes) {
+		// Check for ANSI escape sequence - preserve them
+		if runes[i] == '\x1b' && i+1 < len(runes) && runes[i+1] == '[' {
+			start := i
+			i += 2
+			// Find end of ANSI sequence
+			for i < len(runes) && !((runes[i] >= 'A' && runes[i] <= 'Z') || (runes[i] >= 'a' && runes[i] <= 'z')) {
+				i++
+			}
+			if i < len(runes) {
+				i++ // include final letter
+			}
+			// Copy ANSI sequence
+			result = append(result, runes[start:i]...)
+			continue
+		}
+
+		// Normal character
+		currentRune := runes[i]
+		result = append(result, currentRune)
+		i++
+
+		// If this is a wide character (width 2) and next char is space, skip the space
+		if i < len(runes) && runes[i] == ' ' {
+			// Check if previous character was wide using runewidth
+			if runewidth.RuneWidth(currentRune) == 2 {
+				i++ // Skip the space after wide character
+			}
+		}
+	}
+
+	return string(result)
 }
 
 // GetLastLine returns the last non-empty line of output (for status display)
@@ -509,16 +554,25 @@ func (i *Instance) SendText(text string) error {
 	return cmd.Run()
 }
 
-// SendPrompt sends a prompt text followed by Enter key in a single command
+// SendPrompt sends a prompt text followed by Enter key
 func (i *Instance) SendPrompt(text string) error {
 	if !i.IsAlive() {
 		return fmt.Errorf("session not running")
 	}
 
 	sessionName := i.TmuxSessionName()
-	// Send text and Enter in one command - tmux will not interpret text as key names
-	// unless they are exact key name matches, so this is safe for most prompts
-	cmd := exec.Command("tmux", "send-keys", "-t", sessionName, text, "Enter")
+
+	// First send text literally with -l flag to avoid key interpretation
+	cmd := exec.Command("tmux", "send-keys", "-l", "-t", sessionName, text)
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	// Small delay to ensure text is processed before Enter
+	time.Sleep(50 * time.Millisecond)
+
+	// Then send Enter separately
+	cmd = exec.Command("tmux", "send-keys", "-t", sessionName, "Enter")
 	return cmd.Run()
 }
 

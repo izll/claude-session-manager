@@ -21,17 +21,18 @@ A powerful terminal UI (TUI) application for managing multiple AI coding assista
 - **Single Instance Lock** - Only one instance of ASMGR can run per project at a time
 - **Multi-Agent Support** - Run Claude, Gemini, Aider, Codex, Amazon Q, OpenCode, or custom commands
 - **Multi-Session Management** - Run and manage multiple AI sessions simultaneously (multiple sessions can run in the same directory)
-- **Live Preview** - Real-time preview of agent output with ANSI color support
+- **Parallel Sessions** - Start multiple instances of the same session with different names for working on multiple tasks
+- **Live Preview** - Real-time preview of agent output with ANSI color support and proper wide character handling
 - **Session Resume** - Resume previous conversations for Claude, Gemini, Codex, OpenCode, and Amazon Q
 - **Activity Indicators** - Visual indicators showing active vs idle sessions
 - **Custom Colors** - Personalize sessions with foreground colors, background colors, and gradients
-- **Prompt Sending** - Send messages to running sessions without attaching
+- **Prompt Sending** - Send messages to running sessions without attaching (improved reliability for all agents)
 - **Session Reordering** - Organize sessions with keyboard shortcuts
 - **Compact Mode** - Toggle spacing between sessions for denser view
 - **Smart Resize** - Terminal resize follows when attached, preview size preserved when detached
 - **Overlay Dialogs** - Modal dialogs rendered over the main view with proper Unicode character width handling
 - **Fancy Status Bar** - Styled bottom bar with highlighted keys, toggle indicators, and separators
-- **Rich Help View** - Comprehensive help page with keyboard shortcuts and detailed descriptions (F1 or ?)
+- **Scrollable Help View** - Comprehensive help page with keyboard shortcuts, detailed descriptions, and scroll support
 - **Session Groups** - Organize sessions into collapsible groups for better organization
 
 ## Installation
@@ -88,7 +89,7 @@ asmgr
 |-----|--------|
 | `Enter` | Start (if stopped) and attach to session |
 | `s` | Start session without attaching |
-| `a` | Start NEW session with confirmation (stops current if running) |
+| `a` | Start session with options: replace current or start parallel instance |
 | `x` | Stop session |
 | `n` | Create new session instance |
 | `e` | Rename session |
@@ -158,6 +159,15 @@ ASM can resume previous Claude Code conversations:
 1. Press `r` on any session
 2. Browse through previous conversations (shows last message and timestamp)
 3. Select a conversation to resume or start fresh
+
+## Starting Sessions
+
+Press `a` on any session to see start options:
+
+- **Replace current session** (1/r): Stops the current session (if running) and starts a fresh new one
+- **Start parallel session** (2/n): Prompts for a name (defaults to current session name), then creates a new instance with the same settings and starts it right below the current one in the list
+
+This allows you to work on multiple tasks in the same project simultaneously, each with their own AI session.
 
 ## Session Groups
 

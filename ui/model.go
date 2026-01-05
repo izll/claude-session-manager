@@ -18,7 +18,7 @@ type updateDoneMsg struct{ err error }
 // Version info
 const (
 	AppName    = "asmgr"
-	AppVersion = "0.3.5"
+	AppVersion = "0.3.6"
 )
 
 // Layout constants
@@ -56,6 +56,7 @@ const (
 	stateConfirmDelete
 	stateConfirmDeleteProject // Confirm project deletion
 	stateConfirmImport        // Confirm import sessions
+	stateSelectStartMode      // Select replace or parallel session start
 	stateConfirmStart         // Confirm auto-start session
 	stateRename
 	stateRenameProject // Renaming a project
@@ -88,10 +89,12 @@ type Model struct {
 	deleteTarget    *session.Instance
 	preview         string
 	err             error
-	agentSessions   []session.AgentSession    // Agent sessions for current instance
-	sessionCursor   int                       // Cursor for Claude session selection
-	pendingInstance *session.Instance         // Instance being created
-	lastLines       map[string]string         // Last output line for each instance (by ID)
+	agentSessions       []session.AgentSession    // Agent sessions for current instance
+	sessionCursor       int                       // Cursor for Claude session selection
+	pendingInstance     *session.Instance         // Instance being created
+	isParallelSession   bool                      // True if creating parallel session (don't show resume)
+	parallelOriginalID  string                    // Original instance ID when creating parallel session
+	lastLines           map[string]string         // Last output line for each instance (by ID)
 	prevContent     map[string]string         // Previous content hash to detect activity
 	isActive        map[string]bool           // Whether instance has recent activity
 	colorCursor     int                       // Cursor for color picker
@@ -116,6 +119,7 @@ type Model struct {
 	updateAvailable string                    // New version available (empty if up to date)
 	previewScroll   int                       // Preview scroll offset (0 = bottom, positive = scroll up)
 	scrollContent   string                    // Extended content for scrolling (fetched on demand)
+	helpScroll      int                       // Help view scroll offset (0 = top, positive = scroll down)
 	projects        []*session.Project        // Available projects
 	projectCursor   int                       // Cursor for project selection
 	activeProject   *session.Project          // Currently active project (nil = default)
@@ -326,6 +330,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleSelectSessionKeys(msg)
 		case stateConfirmDelete:
 			return m.handleConfirmDeleteKeys(msg)
+		case stateSelectStartMode:
+			return m.handleSelectStartModeKeys(msg)
 		case stateConfirmStart:
 			return m.handleConfirmStartKeys(msg)
 		case stateRename:

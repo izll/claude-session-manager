@@ -614,9 +614,9 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.handleStartSession()
 
 	case "a":
-		// Auto-start with confirmation (restart if already running)
+		// Show start mode selection (replace or parallel)
 		if inst := m.getSelectedInstance(); inst != nil {
-			m.state = stateConfirmStart
+			m.state = stateSelectStartMode
 		}
 
 	case "x":
@@ -822,11 +822,73 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleNewNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
+		m.pendingInstance = nil
+		m.isParallelSession = false
+		m.parallelOriginalID = ""
 		m.state = stateList
 		return m, nil
 	case "enter":
 		if m.nameInput.Value() != "" {
-			// Create instance with the entered name and stored path
+			// Check if we're creating a parallel session
+			if m.isParallelSession && m.pendingInstance != nil {
+				// Parallel session: just update name and insert
+				inst := m.pendingInstance
+				inst.Name = m.nameInput.Value()
+
+				// Check if command exists before starting
+				if err := session.CheckAgentCommand(inst); err != nil {
+					m.err = err
+					m.state = stateError
+					m.isParallelSession = false
+					m.pendingInstance = nil
+					m.parallelOriginalID = ""
+					return m, nil
+				}
+
+				// Find the original instance and insert after it
+				currentIdx := m.findInstanceIndex(m.parallelOriginalID)
+				if currentIdx >= 0 {
+					m.instances = append(m.instances[:currentIdx+1], append([]*session.Instance{inst}, m.instances[currentIdx+1:]...)...)
+				} else {
+					// Fallback: append to end
+					m.instances = append(m.instances, inst)
+				}
+
+				// Start the new instance
+				if err := inst.Start(); err != nil {
+					m.err = err
+					m.state = stateError
+				} else {
+					m.storage.Save(m.instances)
+
+					// Rebuild visible items and find the new instance
+					if len(m.groups) > 0 {
+						m.buildVisibleItems()
+						for i, item := range m.visibleItems {
+							if !item.isGroup && item.instance != nil && item.instance.ID == inst.ID {
+								m.cursor = i
+								break
+							}
+						}
+					} else {
+						// Non-grouped mode: find instance index
+						for i, existingInst := range m.instances {
+							if existingInst.ID == inst.ID {
+								m.cursor = i
+								break
+							}
+						}
+					}
+				}
+
+				m.pendingInstance = nil
+				m.isParallelSession = false
+				m.parallelOriginalID = ""
+				m.state = stateList
+				return m, nil
+			}
+
+			// Normal session creation: create new instance
 			inst, err := session.NewInstance(m.nameInput.Value(), m.pathInput.Value(), m.autoYes, m.pendingAgent)
 			if err != nil {
 				m.err = err
@@ -1121,6 +1183,49 @@ func (m Model) handleConfirmStartKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleSelectStartModeKeys handles keyboard input for start mode selection
+func (m Model) handleSelectStartModeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "1", "r", "R":
+		// Replace current session - go to confirm dialog
+		m.state = stateConfirmStart
+	case "2", "n", "N":
+		// Start parallel session - ask for name first
+		inst := m.getSelectedInstance()
+		if inst != nil {
+			// Create a new instance based on the current one
+			newInst, err := session.NewInstance(inst.Name, inst.Path, inst.AutoYes, inst.Agent)
+			if err != nil {
+				m.err = err
+				m.state = stateError
+				return m, nil
+			}
+
+			// Copy relevant settings
+			newInst.CustomCommand = inst.CustomCommand
+			newInst.GroupID = inst.GroupID
+			newInst.Color = inst.Color
+			newInst.BgColor = inst.BgColor
+			newInst.FullRowColor = inst.FullRowColor
+
+			// Store as pending instance for name input
+			m.pendingInstance = newInst
+			m.isParallelSession = true
+			m.parallelOriginalID = inst.ID
+
+			// Set default name to current session name and ask for name
+			m.nameInput.SetValue(inst.Name)
+			m.nameInput.Focus()
+			m.state = stateNewName
+			return m, textinput.Blink
+		}
+		m.state = stateList
+	case "esc":
+		m.state = stateList
+	}
+	return m, nil
+}
+
 // handleRenameKeys handles keyboard input in the rename dialog
 func (m Model) handleRenameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
@@ -1146,8 +1251,22 @@ func (m Model) handleRenameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // handleHelpKeys handles keyboard input in the help view
 func (m Model) handleHelpKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "esc", "q", "?":
+	case "esc", "q", "?", "f1", "F1":
 		m.state = stateList
+		m.helpScroll = 0 // Reset scroll when closing
+		return m, nil
+	case "up", "k", "shift+up", "pgup":
+		// Scroll up
+		if m.helpScroll > 0 {
+			m.helpScroll--
+		}
+	case "down", "j", "shift+down", "pgdown":
+		// Scroll down
+		m.helpScroll++
+	case "home":
+		m.helpScroll = 0
+	case "end":
+		m.helpScroll = 999 // Will be clamped in view
 	}
 	return m, nil
 }

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattn/go-runewidth"
 )
 
@@ -18,9 +19,12 @@ func (m Model) renderOverlayDialog(title string, boxContent string, boxWidth int
 func (m Model) renderOverlayDialogWithBackground(title string, boxContent string, boxWidth int, borderColor string, background string) string {
 	bgLines := strings.Split(background, "\n")
 
-	// Ensure background has enough lines to cover the screen
+	// Ensure background has exactly m.height lines
 	for len(bgLines) < m.height {
 		bgLines = append(bgLines, strings.Repeat(" ", m.width))
+	}
+	if len(bgLines) > m.height {
+		bgLines = bgLines[:m.height]
 	}
 
 	// Create the box style
@@ -55,18 +59,19 @@ func (m Model) renderOverlayDialogWithBackground(title string, boxContent string
 			origLine := bgLines[bgY]
 			boxLineWidth := displayWidth(boxLine)
 
-			// Get left part of background
-			leftPart := truncateToWidth(origLine, startX)
-			leftWidth := displayWidth(stripANSI(leftPart))
+			// Get left part of background using ansi library
+			leftPart := ansi.Truncate(origLine, startX, "")
+			leftWidth := ansi.StringWidth(leftPart)
 
-			// Pad left part if needed
+			// Pad left part if needed (this handles wide chars that don't fit)
 			if leftWidth < startX {
 				leftPart += strings.Repeat(" ", startX-leftWidth)
 			}
 
 			// Get right part of background
-			rightStart := startX + boxLineWidth
-			rightPart := skipToWidth(origLine, rightStart)
+			// Use the actual leftWidth, not startX, to account for wide chars
+			rightStart := leftWidth + boxLineWidth
+			rightPart := ansi.Cut(origLine, rightStart, -1)
 
 			bgLines[bgY] = leftPart + "\x1b[0m" + boxLine + "\x1b[0m" + rightPart
 		}
@@ -77,7 +82,7 @@ func (m Model) renderOverlayDialogWithBackground(title string, boxContent string
 
 // displayWidth returns the display width of a string (accounting for double-width chars)
 func displayWidth(s string) int {
-	return runewidth.StringWidth(stripANSI(s))
+	return ansi.StringWidth(s)
 }
 
 // truncateToWidth truncates a string to fit within maxWidth display columns, preserving ANSI
@@ -141,8 +146,11 @@ func skipToWidth(s string, startWidth int) string {
 			}
 		} else {
 			charWidth := runewidth.RuneWidth(runes[i])
+			// Start copying after we've fully passed startWidth
 			if width >= startWidth {
 				started = true
+			}
+			if started {
 				result.WriteRune(runes[i])
 			}
 			width += charWidth
