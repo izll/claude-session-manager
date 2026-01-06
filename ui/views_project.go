@@ -134,31 +134,35 @@ func (m Model) projectSelectView() string {
 // newProjectView renders the new project creation dialog
 func (m Model) newProjectView() string {
 	var boxContent strings.Builder
-	boxContent.WriteString("\n")
+	boxContent.WriteString("\n\n")
 	boxContent.WriteString("  Project Name:\n")
 	boxContent.WriteString("  " + m.projectInput.View() + "\n\n")
 	boxContent.WriteString(helpStyle.Render("  enter: create  esc: cancel"))
 	boxContent.WriteString("\n")
 
-	return m.renderOverlayDialog(" New Project ", boxContent.String(), 50, ColorPurple)
+	// Use project select view as background
+	background := m.projectSelectView()
+	return m.renderOverlayDialogWithBackground(" New Project ", boxContent.String(), 50, ColorPurple, background)
 }
 
 // renameProjectView renders the project rename dialog
 func (m Model) renameProjectView() string {
 	var boxContent strings.Builder
-	boxContent.WriteString("\n")
+	boxContent.WriteString("\n\n")
 	boxContent.WriteString("  New Name:\n")
 	boxContent.WriteString("  " + m.projectInput.View() + "\n\n")
 	boxContent.WriteString(helpStyle.Render("  enter: save  esc: cancel"))
 	boxContent.WriteString("\n")
 
-	return m.renderOverlayDialog(" Rename Project ", boxContent.String(), 50, ColorPurple)
+	// Use project select view as background
+	background := m.projectSelectView()
+	return m.renderOverlayDialogWithBackground(" Rename Project ", boxContent.String(), 50, ColorPurple, background)
 }
 
 // confirmDeleteProjectView renders the project deletion confirmation
 func (m Model) confirmDeleteProjectView() string {
 	var boxContent strings.Builder
-	boxContent.WriteString("\n")
+	boxContent.WriteString("\n\n")
 	if m.deleteProjectTarget != nil {
 		boxContent.WriteString(fmt.Sprintf("  Delete project '%s'?\n", m.deleteProjectTarget.Name))
 		boxContent.WriteString("  All sessions in this project will be deleted.\n\n")
@@ -166,13 +170,15 @@ func (m Model) confirmDeleteProjectView() string {
 	boxContent.WriteString(helpStyle.Render("  y: yes  n: no"))
 	boxContent.WriteString("\n")
 
-	return m.renderOverlayDialog(" Confirm Delete ", boxContent.String(), 50, ColorRed)
+	// Use project select view as background
+	background := m.projectSelectView()
+	return m.renderOverlayDialogWithBackground(" Confirm Delete ", boxContent.String(), 50, ColorRed, background)
 }
 
 // confirmImportView renders the import confirmation dialog with default sessions as background
 func (m Model) confirmImportView() string {
 	var boxContent strings.Builder
-	boxContent.WriteString("\n")
+	boxContent.WriteString("\n\n")
 
 	// Load default sessions
 	originalProject := m.storage.GetActiveProjectID()

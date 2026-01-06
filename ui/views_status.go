@@ -141,7 +141,7 @@ func (m Model) buildStatusBar() string {
 func (m Model) selectSessionView() string {
 	var b strings.Builder
 
-	b.WriteString("\n")
+	b.WriteString("\n\n")
 
 	// Calculate visible window
 	maxVisible := SessionListMaxItems

@@ -11,7 +11,7 @@ import (
 // confirmDeleteView renders the delete confirmation dialog as an overlay
 func (m Model) confirmDeleteView() string {
 	var boxContent strings.Builder
-	boxContent.WriteString("\n")
+	boxContent.WriteString("\n\n")
 	if m.deleteTarget != nil {
 		boxContent.WriteString(fmt.Sprintf("  Delete session '%s'?\n\n", m.deleteTarget.Name))
 	}
@@ -24,7 +24,7 @@ func (m Model) confirmDeleteView() string {
 // confirmStartView renders the auto-start confirmation dialog as an overlay
 func (m Model) confirmStartView() string {
 	var boxContent strings.Builder
-	boxContent.WriteString("\n")
+	boxContent.WriteString("\n\n")
 	if inst := m.getSelectedInstance(); inst != nil {
 		if inst.Status == session.StatusRunning {
 			boxContent.WriteString(fmt.Sprintf("  Start NEW session for '%s'?\n", inst.Name))
@@ -42,7 +42,7 @@ func (m Model) confirmStartView() string {
 // selectStartModeView renders the start mode selection dialog
 func (m Model) selectStartModeView() string {
 	var boxContent strings.Builder
-	boxContent.WriteString("\n")
+	boxContent.WriteString("\n\n")
 	if inst := m.getSelectedInstance(); inst != nil {
 		boxContent.WriteString(fmt.Sprintf("  Start mode for '%s':\n\n", inst.Name))
 		boxContent.WriteString("  1/r: Replace current session\n")
@@ -61,7 +61,7 @@ func (m Model) selectStartModeView() string {
 // newInstanceView renders the new session creation dialog as an overlay
 func (m Model) newInstanceView() string {
 	var boxContent strings.Builder
-	boxContent.WriteString("\n")
+	boxContent.WriteString("\n\n")
 
 	if m.state == stateNewPath {
 		boxContent.WriteString("  Project Path:\n")
@@ -90,7 +90,7 @@ func (m Model) newInstanceView() string {
 // renameView renders the rename dialog as an overlay
 func (m Model) renameView() string {
 	var boxContent strings.Builder
-	boxContent.WriteString("\n")
+	boxContent.WriteString("\n\n")
 
 	if inst := m.getSelectedInstance(); inst != nil {
 		boxContent.WriteString(fmt.Sprintf("  Current: %s\n\n", inst.Name))
@@ -116,7 +116,7 @@ func (m Model) renameView() string {
 // promptView renders the prompt input dialog overlaid on the list view
 func (m Model) promptView() string {
 	var boxContent strings.Builder
-	boxContent.WriteString("\n")
+	boxContent.WriteString("\n\n")
 
 	if inst := m.getSelectedInstance(); inst != nil {
 		boxContent.WriteString(fmt.Sprintf("  Session: %s\n\n", inst.Name))
@@ -153,7 +153,7 @@ func (m Model) promptView() string {
 // newGroupView renders the new group dialog as an overlay
 func (m Model) newGroupView() string {
 	var boxContent strings.Builder
-	boxContent.WriteString("\n")
+	boxContent.WriteString("\n\n")
 	boxContent.WriteString("  Group Name:\n")
 	boxContent.WriteString("  " + m.groupInput.View() + "\n")
 	boxContent.WriteString("\n")
@@ -166,7 +166,7 @@ func (m Model) newGroupView() string {
 // renameGroupView renders the rename group dialog as an overlay
 func (m Model) renameGroupView() string {
 	var boxContent strings.Builder
-	boxContent.WriteString("\n")
+	boxContent.WriteString("\n\n")
 
 	m.buildVisibleItems()
 	if m.cursor >= 0 && m.cursor < len(m.visibleItems) {
@@ -188,7 +188,7 @@ func (m Model) renameGroupView() string {
 // selectGroupView renders the group selection dialog as an overlay
 func (m *Model) selectGroupView() string {
 	var boxContent strings.Builder
-	boxContent.WriteString("\n")
+	boxContent.WriteString("\n\n")
 
 	// Find current session (works in both grouped and ungrouped modes)
 	var inst *session.Instance
@@ -236,7 +236,7 @@ func (m *Model) selectGroupView() string {
 // selectAgentView renders the agent type selection dialog as an overlay
 func (m Model) selectAgentView() string {
 	var boxContent strings.Builder
-	boxContent.WriteString("\n")
+	boxContent.WriteString("\n\n")
 	boxContent.WriteString("  Select Agent Type:\n\n")
 
 	// Agent options with descriptions
@@ -283,7 +283,7 @@ func (m Model) selectAgentView() string {
 // customCmdView renders the custom command input dialog as an overlay
 func (m Model) customCmdView() string {
 	var boxContent strings.Builder
-	boxContent.WriteString("\n")
+	boxContent.WriteString("\n\n")
 	boxContent.WriteString("  Enter the command to run:\n\n")
 	boxContent.WriteString("  " + m.customCmdInput.View() + "\n")
 	boxContent.WriteString("\n")
@@ -354,7 +354,7 @@ func (m Model) errorView() string {
 // confirmUpdateView renders the update confirmation dialog
 func (m Model) confirmUpdateView() string {
 	var boxContent strings.Builder
-	boxContent.WriteString("\n")
+	boxContent.WriteString("\n\n")
 	if m.updateAvailable != "" {
 		boxContent.WriteString(fmt.Sprintf("  Update to %s?\n\n", m.updateAvailable))
 	} else {
@@ -369,7 +369,7 @@ func (m Model) confirmUpdateView() string {
 // checkingUpdateView renders the "checking for updates" message
 func (m Model) checkingUpdateView() string {
 	var boxContent strings.Builder
-	boxContent.WriteString("\n")
+	boxContent.WriteString("\n\n")
 	boxContent.WriteString("  Checking for updates...\n")
 	boxContent.WriteString("\n")
 
