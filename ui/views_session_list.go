@@ -8,6 +8,25 @@ import (
 	"github.com/izll/agent-session-manager/session"
 )
 
+// agentIcons maps agent types to their display icons
+var agentIcons = map[session.AgentType]string{
+	session.AgentClaude:   "🤖",
+	session.AgentGemini:   "💎",
+	session.AgentAider:    "🔧",
+	session.AgentCodex:    "📦",
+	session.AgentAmazonQ:  "🦜",
+	session.AgentOpenCode: "💻",
+	session.AgentCustom:   "⚙️",
+}
+
+// getAgentIcon returns the icon for an agent type
+func getAgentIcon(agent session.AgentType) string {
+	if icon, ok := agentIcons[agent]; ok {
+		return icon
+	}
+	return "?"
+}
+
 // renderSessionRow renders a single session row with all color and style logic
 func (m Model) renderSessionRow(inst *session.Instance, index int, listWidth int) string {
 	var row strings.Builder
@@ -38,7 +57,11 @@ func (m Model) renderSessionRow(inst *session.Instance, index int, listWidth int
 
 	// Truncate name to fit
 	name := inst.Name
-	maxNameLen := listWidth - 6
+	iconLen := 0
+	if m.showAgentIcons {
+		iconLen = 3 // space + emoji
+	}
+	maxNameLen := listWidth - 6 - iconLen
 	if maxNameLen < 10 {
 		maxNameLen = 10
 	}
@@ -50,17 +73,32 @@ func (m Model) renderSessionRow(inst *session.Instance, index int, listWidth int
 	styledName := m.getStyledName(inst, name)
 	selected := index == m.cursor
 
+	// Append agent icon if enabled
+	displayName := name
+	displayStyledName := styledName
+	if m.showAgentIcons {
+		icon := " " + getAgentIcon(inst.Agent)
+		displayName = name + icon
+		displayStyledName = styledName + icon
+	}
+
 	// Render the row
 	if selected {
-		row.WriteString(m.renderSelectedRow(inst, name, styledName, status, listWidth))
+		row.WriteString(m.renderSelectedRow(inst, displayName, displayStyledName, status, listWidth))
 	} else {
-		row.WriteString(m.renderUnselectedRow(inst, name, styledName, status, listWidth))
+		row.WriteString(m.renderUnselectedRow(inst, displayName, displayStyledName, status, listWidth))
 	}
 	row.WriteString("\n")
 
-	// Show last output line
+	// Show last output line (text white if selected, gray otherwise)
 	lastLine := m.getLastLine(inst)
-	row.WriteString(fmt.Sprintf("     └─ %s", lastLine))
+	lineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorLightGray))
+	if selected {
+		textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorWhite))
+		row.WriteString(lineStyle.Render("     └─ ") + textStyle.Render(lastLine))
+	} else {
+		row.WriteString(lineStyle.Render(fmt.Sprintf("     └─ %s", lastLine)))
+	}
 	row.WriteString("\n")
 
 	if !m.compactList {
@@ -426,9 +464,13 @@ func (m Model) renderGroupedSessionRow(inst *session.Instance, index int, listWi
 		status += dimStyle.Render("◆")
 	}
 
-	// Truncate name to fit (accounting for prefix)
+	// Truncate name to fit (accounting for prefix and icon)
 	name := inst.Name
-	maxNameLen := listWidth - 10
+	iconLen := 0
+	if m.showAgentIcons {
+		iconLen = 3 // space + emoji
+	}
+	maxNameLen := listWidth - 10 - iconLen
 	if maxNameLen < 8 {
 		maxNameLen = 8
 	}
@@ -440,26 +482,41 @@ func (m Model) renderGroupedSessionRow(inst *session.Instance, index int, listWi
 	styledName := m.getStyledName(inst, name)
 	selected := index == m.cursor
 
+	// Append agent icon if enabled
+	displayName := name
+	displayStyledName := styledName
+	if m.showAgentIcons {
+		icon := " " + getAgentIcon(inst.Agent)
+		displayName = name + icon
+		displayStyledName = styledName + icon
+	}
+
 	// Render the row
 	treeStyle := dimStyle
 	if selected {
 		row.WriteString(fmt.Sprintf(" %s%s %s", listSelectedStyle.Render("▸"), treeStyle.Render(prefix[1:]), status))
 		if inst.FullRowColor && inst.BgColor != "" {
-			row.WriteString(" " + m.renderSelectedRowContent(inst, name, listWidth-10))
+			row.WriteString(" " + m.renderSelectedRowContent(inst, displayName, listWidth-10-iconLen))
 		} else if inst.Color != "" || inst.BgColor != "" {
-			row.WriteString(" " + lipgloss.NewStyle().Bold(true).Render(styledName))
+			row.WriteString(" " + lipgloss.NewStyle().Bold(true).Render(displayStyledName))
 		} else {
-			row.WriteString(" " + lipgloss.NewStyle().Bold(true).Render(name))
+			row.WriteString(" " + lipgloss.NewStyle().Bold(true).Render(displayName))
 		}
 	} else {
-		row.WriteString(fmt.Sprintf(" %s %s %s", treeStyle.Render(prefix), status, styledName))
+		row.WriteString(fmt.Sprintf(" %s %s %s", treeStyle.Render(prefix), status, displayStyledName))
 	}
 	row.WriteString("\n")
 
-	// Show last output line with tree connector (└─ aligns under ● status icon)
+	// Show last output line with tree connector (text white if selected, gray otherwise)
 	if !m.hideStatusLines {
 		lastLine := m.getLastLine(inst)
-		row.WriteString(fmt.Sprintf(" %s  └─ %s", treeStyle.Render(lastLinePrefix), lastLine))
+		lineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorLightGray))
+		if selected {
+			textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorWhite))
+			row.WriteString(lineStyle.Render(fmt.Sprintf(" %s  └─ ", lastLinePrefix)) + textStyle.Render(lastLine))
+		} else {
+			row.WriteString(lineStyle.Render(fmt.Sprintf(" %s  └─ %s", lastLinePrefix, lastLine)))
+		}
 		row.WriteString("\n")
 	}
 

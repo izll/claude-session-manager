@@ -29,7 +29,7 @@ type rpmDownloadDoneMsg struct {
 // Version info
 const (
 	AppName    = "asmgr"
-	AppVersion = "0.5.0"
+	AppVersion = "0.5.2"
 )
 
 // Layout constants
@@ -123,6 +123,7 @@ type Model struct {
 	previewBg       string                    // Preview background color
 	compactList     bool                      // No extra line between sessions
 	hideStatusLines bool                      // Hide last output line under sessions
+	showAgentIcons  bool                      // Show agent type icons in session list
 	splitView       bool                      // Split preview mode
 	markedSessionID string                    // Session ID marked for split view
 	splitFocus      int                       // 0 = selected (bottom), 1 = pinned (top)
@@ -258,10 +259,26 @@ func (m Model) Init() tea.Cmd {
 	)
 }
 
-// checkForUpdateCmd checks for updates in the background
+// checkForUpdateCmd checks for updates in the background (once per day, after 30s delay)
 func checkForUpdateCmd() tea.Cmd {
 	return func() tea.Msg {
+		// Wait 30 seconds after startup before checking
+		time.Sleep(30 * time.Second)
+		// Only check if 24 hours have passed since last check
+		if !updater.ShouldCheckForUpdate() {
+			return updateCheckMsg("")
+		}
 		newVersion := updater.CheckForUpdate(AppVersion)
+		updater.SaveLastCheckTime()
+		return updateCheckMsg(newVersion)
+	}
+}
+
+// forceCheckForUpdateCmd always checks for updates (user requested)
+func forceCheckForUpdateCmd() tea.Cmd {
+	return func() tea.Msg {
+		newVersion := updater.CheckForUpdate(AppVersion)
+		updater.SaveLastCheckTime()
 		return updateCheckMsg(newVersion)
 	}
 }
@@ -778,6 +795,7 @@ func (m *Model) switchToProject(project *session.Project) error {
 	m.cursor = settings.Cursor
 	m.compactList = settings.CompactList
 	m.hideStatusLines = settings.HideStatusLines
+	m.showAgentIcons = settings.ShowAgentIcons
 	m.splitView = settings.SplitView
 	m.markedSessionID = settings.MarkedSessionID
 	m.splitFocus = settings.SplitFocus

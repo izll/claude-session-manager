@@ -31,6 +31,7 @@ type Group struct {
 type Settings struct {
 	CompactList       bool   `json:"compact_list"`
 	HideStatusLines   bool   `json:"hide_status_lines"`
+	ShowAgentIcons    bool   `json:"show_agent_icons,omitempty"`
 	SplitView         bool   `json:"split_view,omitempty"`
 	MarkedSessionID   string `json:"marked_session_id,omitempty"`
 	Cursor            int    `json:"cursor,omitempty"`

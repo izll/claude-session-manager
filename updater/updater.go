@@ -16,15 +16,61 @@ import (
 )
 
 const (
-	RepoOwner    = "izll"
-	RepoName     = "agent-session-manager"
-	BinaryName   = "asmgr"
-	CheckTimeout = 5 * time.Second
+	RepoOwner      = "izll"
+	RepoName       = "agent-session-manager"
+	BinaryName     = "asmgr"
+	CheckTimeout   = 5 * time.Second
+	CheckInterval  = 24 * time.Hour // Check for updates once per day
+	LastCheckFile  = "last_update_check"
 )
 
 type GitHubRelease struct {
 	TagName     string    `json:"tag_name"`
 	PublishedAt time.Time `json:"published_at"`
+}
+
+// getConfigDir returns the config directory path
+func getConfigDir() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(homeDir, ".config", "agent-session-manager")
+}
+
+// ShouldCheckForUpdate returns true if enough time has passed since the last check
+func ShouldCheckForUpdate() bool {
+	configDir := getConfigDir()
+	if configDir == "" {
+		return true // If we can't determine config dir, check anyway
+	}
+
+	lastCheckPath := filepath.Join(configDir, LastCheckFile)
+	data, err := os.ReadFile(lastCheckPath)
+	if err != nil {
+		return true // File doesn't exist or can't read, check anyway
+	}
+
+	lastCheck, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data)))
+	if err != nil {
+		return true // Invalid timestamp, check anyway
+	}
+
+	return time.Since(lastCheck) >= CheckInterval
+}
+
+// SaveLastCheckTime saves the current time as the last update check time
+func SaveLastCheckTime() {
+	configDir := getConfigDir()
+	if configDir == "" {
+		return
+	}
+
+	// Ensure config dir exists
+	os.MkdirAll(configDir, 0755)
+
+	lastCheckPath := filepath.Join(configDir, LastCheckFile)
+	os.WriteFile(lastCheckPath, []byte(time.Now().Format(time.RFC3339)), 0644)
 }
 
 // IsPackageManaged checks if the binary was installed via a package manager

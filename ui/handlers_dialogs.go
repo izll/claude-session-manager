@@ -703,9 +703,9 @@ func (m Model) handleConfirmUpdateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = stateUpdating
 			return m, runUpdateCmd(m.updateAvailable)
 		}
-		// Otherwise check for updates first
+		// Otherwise check for updates first (force check, ignore 24h timer)
 		m.state = stateCheckingUpdate
-		return m, checkForUpdateCmd()
+		return m, forceCheckForUpdateCmd()
 	case "n", "N", "esc":
 		// Cancel - go back to list
 		m.state = stateList

@@ -94,10 +94,10 @@ func (m Model) helpView() string {
 	// Row 4: Toggles & Split View
 	toggleKeys := []string{
 		keyStyle.Render("l") + descStyle.Render(" compact"),
-		keyStyle.Render("y") + descStyle.Render(" autoyes"),
+		keyStyle.Render("t") + descStyle.Render(" status"),
+		keyStyle.Render("I") + descStyle.Render(" icons"),
 		keyStyle.Render("v") + descStyle.Render(" split"),
 		keyStyle.Render("m") + descStyle.Render(" mark"),
-		keyStyle.Render("⇥") + descStyle.Render(" focus"),
 	}
 	b.WriteString("  " + strings.Join(toggleKeys, "  "))
 	b.WriteString("\n\n")
@@ -144,6 +144,7 @@ func (m Model) helpView() string {
 		{"← Left", "Collapse an expanded group"},
 		{"l Compact", "Toggle compact view (less spacing between sessions)"},
 		{"t Status", "Toggle status line visibility under sessions"},
+		{"I Icons", "Toggle agent type icons in session list (Claude🤖 Gemini💎 etc.)"},
 		{"^Y Yolo", "Toggle auto-approve/yolo mode on selected session (restarts if running)"},
 		{"v Split", "Toggle split view to show two previews"},
 		{"m Mark", "Mark session for split view (pinned on top)"},

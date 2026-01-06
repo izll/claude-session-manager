@@ -25,6 +25,7 @@ A powerful terminal UI (TUI) application for managing multiple AI coding assista
 - **Live Preview** - Real-time preview of agent output with ANSI color support and proper wide character handling
 - **Session Resume** - Resume previous conversations for Claude, Gemini, Codex, OpenCode, and Amazon Q
 - **Activity Indicators** - Visual indicators showing active vs idle sessions
+- **Agent Icons** - Toggle display of agent type icons (🤖💎🔧📦🦜💻⚙️) in session list
 - **Custom Colors** - Personalize sessions with foreground colors, background colors, and gradients
 - **Prompt Sending** - Send messages to running sessions without attaching (improved reliability for all agents)
 - **Session Reordering** - Organize sessions with keyboard shortcuts
@@ -81,7 +82,7 @@ chmod +x install.sh
 Install options:
 ```bash
 ./install.sh              # Install latest version to ~/.local/bin
-./install.sh -v 0.5.0     # Install specific version
+./install.sh -v 0.5.2     # Install specific version
 ./install.sh -d /usr/local/bin  # Install to custom directory
 ./install.sh -u           # Update existing installation
 ```
@@ -91,15 +92,15 @@ Install options:
 **Debian/Ubuntu (.deb):**
 ```bash
 # Download from releases
-wget https://github.com/izll/agent-session-manager/releases/download/v0.5.0/asmgr_0.5.0_linux_amd64.deb
-sudo dpkg -i asmgr_0.5.0_linux_amd64.deb
+wget https://github.com/izll/agent-session-manager/releases/download/v0.5.2/asmgr_0.5.2_linux_amd64.deb
+sudo dpkg -i asmgr_0.5.2_linux_amd64.deb
 ```
 
 **RedHat/Fedora/Rocky (.rpm):**
 ```bash
 # Download from releases
-wget https://github.com/izll/agent-session-manager/releases/download/v0.5.0/asmgr_0.5.0_linux_x86_64.rpm
-sudo rpm -i asmgr_0.5.0_linux_x86_64.rpm
+wget https://github.com/izll/agent-session-manager/releases/download/v0.5.2/asmgr_0.5.2_linux_x86_64.rpm
+sudo rpm -i asmgr_0.5.2_linux_x86_64.rpm
 ```
 
 ### Build from Source
@@ -206,6 +207,7 @@ asmgr
 | `c` | Change session color |
 | `l` | Toggle compact mode |
 | `t` | Toggle status lines (last output under sessions) |
+| `I` | Toggle agent icons in session list (🤖💎🔧📦🦜💻⚙️) |
 | `Ctrl+y` | Toggle auto-yes/yolo mode (restarts session if running) |
 
 #### Split View

@@ -46,13 +46,107 @@ func (m Model) buildPreviewPane(contentHeight int) string {
 			if !item.isGroup {
 				inst = item.instance
 			} else {
-				// Group selected - show group info
-				rightPane.WriteString(dimStyle.Render(fmt.Sprintf("  Group: %s", item.group.Name)))
+				// Group selected - show group info with session details
+				rightPane.WriteString("  " + projectLabelStyle.Render("Group: ") + projectNameStyle.Render(item.group.Name))
 				rightPane.WriteString("\n")
-				sessionCount := len(m.getSessionsInGroup(item.group.ID))
-				rightPane.WriteString(dimStyle.Render(fmt.Sprintf("  Sessions: %d", sessionCount)))
+
+				sessions := m.getSessionsInGroup(item.group.ID)
+				runningCount := 0
+				for _, s := range sessions {
+					if s.Status == session.StatusRunning {
+						runningCount++
+					}
+				}
+
+				rightPane.WriteString("  " + projectLabelStyle.Render("Sessions: ") + fmt.Sprintf("%d", len(sessions)))
+				if runningCount > 0 {
+					runningStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorGreen))
+					rightPane.WriteString(runningStyle.Render(fmt.Sprintf(" (%d running)", runningCount)))
+				}
+				rightPane.WriteString("\n")
+				rightPane.WriteString(dimStyle.Render(strings.Repeat("─", previewWidth)))
 				rightPane.WriteString("\n\n")
-				rightPane.WriteString(dimStyle.Render("  Press Enter to toggle collapse"))
+
+				// List sessions in group with full info
+				if len(sessions) > 0 {
+					for i, s := range sessions {
+						// Status indicator
+						var statusIcon string
+						if s.Status == session.StatusRunning {
+							switch m.activityState[s.ID] {
+							case session.ActivityBusy:
+								statusIcon = activeStyle.Render("●")
+							case session.ActivityWaiting:
+								statusIcon = waitingStyle.Render("●")
+							default:
+								statusIcon = idleStyle.Render("●")
+							}
+						} else {
+							statusIcon = stoppedStyle.Render("○")
+						}
+
+						// Session name with status
+						rightPane.WriteString(fmt.Sprintf("  %s %s", statusIcon, lipgloss.NewStyle().Bold(true).Render(s.Name)))
+						rightPane.WriteString("\n")
+
+						// Path
+						rightPane.WriteString("    " + projectLabelStyle.Render("Path: ") + projectNameStyle.Render(s.Path))
+						rightPane.WriteString("\n")
+
+						// Agent
+						agentName := "Claude Code"
+						switch s.Agent {
+						case session.AgentGemini:
+							agentName = "Gemini"
+						case session.AgentAider:
+							agentName = "Aider"
+						case session.AgentCodex:
+							agentName = "Codex CLI"
+						case session.AgentAmazonQ:
+							agentName = "Amazon Q"
+						case session.AgentOpenCode:
+							agentName = "OpenCode"
+						case session.AgentCustom:
+							agentName = "Custom"
+						}
+						if (s.Agent == session.AgentClaude || s.Agent == "") && s.AutoYes {
+							yoloStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorOrange))
+							rightPane.WriteString("    " + projectLabelStyle.Render("Agent: ") + projectNameStyle.Render(agentName) + yoloStyle.Render(" ! YOLO"))
+						} else {
+							rightPane.WriteString("    " + projectLabelStyle.Render("Agent: ") + projectNameStyle.Render(agentName))
+						}
+						rightPane.WriteString("\n")
+
+						// Resume ID (if any)
+						if s.ResumeSessionID != "" {
+							rightPane.WriteString("    " + projectLabelStyle.Render("Resume: ") + projectNameStyle.Render(s.ResumeSessionID[:8]))
+							rightPane.WriteString("\n")
+						}
+
+						// Notes (if any)
+						if s.Notes != "" {
+							notesPreview := s.Notes
+							if idx := strings.Index(notesPreview, "\n"); idx != -1 {
+								notesPreview = notesPreview[:idx] + "…"
+							}
+							maxLen := previewWidth - 14
+							if len([]rune(notesPreview)) > maxLen {
+								notesPreview = string([]rune(notesPreview)[:maxLen-1]) + "…"
+							}
+							notesStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorYellow)).Italic(true)
+							rightPane.WriteString("    " + projectLabelStyle.Render("Notes: ") + notesStyle.Render(notesPreview))
+							rightPane.WriteString("\n")
+						}
+
+						// Separator between sessions (except last)
+						if i < len(sessions)-1 {
+							rightPane.WriteString("\n")
+						}
+					}
+				}
+
+				rightPane.WriteString("\n")
+				rightPane.WriteString(dimStyle.Render("  ↵ toggle • →/← expand/collapse"))
 				return rightPane.String()
 			}
 		}
@@ -93,19 +187,14 @@ func (m Model) buildPreviewPane(contentHeight int) string {
 	}
 	rightPane.WriteString("\n")
 
-	// Calculate actual header height: Initial(1) + Title(1) + blank(1) + Path(1) + Agent(1) + separator(1) = 6 base + 1 buffer
-	headerLines := 7
-
 	if inst.Agent == session.AgentCustom && inst.CustomCommand != "" {
 		rightPane.WriteString("  " + projectLabelStyle.Render("Command: ") + projectNameStyle.Render(inst.CustomCommand))
 		rightPane.WriteString("\n")
-		headerLines++
 	}
 
 	if inst.ResumeSessionID != "" {
 		rightPane.WriteString("  " + projectLabelStyle.Render("Resume: ") + projectNameStyle.Render(inst.ResumeSessionID[:8]))
 		rightPane.WriteString("\n")
-		headerLines++
 	}
 
 	// Display notes if any (truncated to fit)
@@ -122,13 +211,14 @@ func (m Model) buildPreviewPane(contentHeight int) string {
 		notesStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorYellow)).Italic(true)
 		rightPane.WriteString("  " + projectLabelStyle.Render("Notes: ") + notesStyle.Render(notesPreview))
 		rightPane.WriteString("\n")
-		headerLines++
 	}
 
 	// Horizontal separator
 	rightPane.WriteString(dimStyle.Render(strings.Repeat("─", previewWidth)))
 	rightPane.WriteString("\n")
-	headerLines++
+
+	// Count actual header lines dynamically (+1 for bottom padding)
+	headerLines := strings.Count(rightPane.String(), "\n") + 1
 
 	// Preview content
 	if m.preview == "" {

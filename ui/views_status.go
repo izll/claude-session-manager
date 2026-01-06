@@ -80,9 +80,14 @@ func (m Model) buildStatusBar() string {
 	if m.splitView {
 		splitStatus = onStyle.Render("ON")
 	}
+	iconsStatus := offStyle.Render("OFF")
+	if m.showAgentIcons {
+		iconsStatus = onStyle.Render("ON")
+	}
 	p5 := []string{
 		keyStyle.Render("l") + descStyle.Render(" compact ") + compactStatus,
 		keyStyle.Render("t") + descStyle.Render(" status ") + statusLinesStatus,
+		keyStyle.Render("I") + descStyle.Render(" icons ") + iconsStatus,
 		keyStyle.Render("^Y") + descStyle.Render(" yolo ") + autoYesStatus,
 		keyStyle.Render("v") + descStyle.Render(" split ") + splitStatus,
 	}

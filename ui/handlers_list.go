@@ -100,7 +100,7 @@ func (m *Model) handleMoveSessionDown() {
 		currentIdx := m.findInstanceIndex(currentItem.instance.ID)
 		nextIdx := m.findInstanceIndex(nextItem.instance.ID)
 		if currentIdx >= 0 && nextIdx >= 0 {
-			m.instances[currentIdx], m.instances[nextIdx] = m.instances[nextIdx], m.instances[nextIdx]
+			m.instances[currentIdx], m.instances[nextIdx] = m.instances[nextIdx], m.instances[currentIdx]
 			m.cursor++
 			m.storage.Save(m.instances)
 		}
@@ -140,6 +140,7 @@ func (m *Model) saveSettings() {
 	m.storage.SaveSettings(&session.Settings{
 		CompactList:     m.compactList,
 		HideStatusLines: m.hideStatusLines,
+		ShowAgentIcons:  m.showAgentIcons,
 		SplitView:       m.splitView,
 		MarkedSessionID: m.markedSessionID,
 		Cursor:          m.cursor,
@@ -495,6 +496,10 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "t":
 		m.hideStatusLines = !m.hideStatusLines
+		m.saveSettings()
+
+	case "I":
+		m.showAgentIcons = !m.showAgentIcons
 		m.saveSettings()
 
 	case "v":
