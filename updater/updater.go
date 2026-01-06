@@ -131,12 +131,12 @@ func DownloadDeb(version string) (string, error) {
 	arch := runtime.GOARCH
 	verNum := strings.TrimPrefix(version, "v")
 
-	// Map Go arch to deb arch
+	// Map Go arch to deb arch (GoReleaser uses x86_64/aarch64)
 	debArch := arch
 	if arch == "amd64" {
-		debArch = "amd64"
+		debArch = "x86_64"
 	} else if arch == "arm64" {
-		debArch = "arm64"
+		debArch = "aarch64"
 	}
 
 	filename := fmt.Sprintf("%s_%s_linux_%s.deb", BinaryName, verNum, debArch)
