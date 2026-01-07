@@ -228,7 +228,21 @@ func formatTmuxSessionName(name, fgColor, bgColor string) string {
 		return fmt.Sprintf("#[fg=%s,bg=%s,bold]%s#[default]", textColor, bgCol, name)
 	}
 
-	// If background color is set, use white text on colored background
+	// Plain hex foreground color
+	if fgColor != "" && fgColor != "auto" && len(fgColor) > 0 && fgColor[0] == '#' {
+		// With background color
+		if bgColor != "" && bgColor != "auto" {
+			bgCol := bgColor
+			if colors, isGrad := gradients[bgColor]; isGrad && len(colors) > 0 {
+				bgCol = colors[0]
+			}
+			return fmt.Sprintf("#[fg=%s,bg=%s,bold]%s#[default]", fgColor, bgCol, name)
+		}
+		// Foreground only
+		return fmt.Sprintf("#[fg=%s,bold]%s#[default]", fgColor, name)
+	}
+
+	// Background only (no foreground set) - use white text
 	if bgColor != "" && bgColor != "auto" {
 		bgCol := bgColor
 		if colors, isGrad := gradients[bgColor]; isGrad && len(colors) > 0 {
@@ -237,11 +251,77 @@ func formatTmuxSessionName(name, fgColor, bgColor string) string {
 		return fmt.Sprintf("#[fg=#FAFAFA,bg=%s,bold]%s#[default]", bgCol, name)
 	}
 
-	// Plain hex color
+	// Default: white on purple
+	return fmt.Sprintf("#[fg=#FAFAFA,bg=%s,bold]%s#[default]", ColorPurple, name)
+}
+
+// formatSessionNameLipgloss formats session name for UI display with lipgloss
+func formatSessionNameLipgloss(name, fgColor, bgColor string) string {
+	style := lipgloss.NewStyle().Bold(true)
+
+	// Check if foreground is gradient
+	if colors, isGradient := gradients[fgColor]; isGradient {
+		// For gradients, apply colors to characters
+		return applyLipglossGradient(name, colors)
+	}
+
+	// Handle "auto" foreground - use contrast color based on background
+	if fgColor == "auto" && bgColor != "" && bgColor != "auto" {
+		bgCol := bgColor
+		if colors, isGrad := gradients[bgColor]; isGrad && len(colors) > 0 {
+			bgCol = colors[0]
+		}
+		textColor := getContrastColor(bgCol)
+		style = style.Foreground(lipgloss.Color(textColor)).Background(lipgloss.Color(bgCol))
+		return style.Render(name)
+	}
+
+	// Plain hex foreground color
 	if fgColor != "" && fgColor != "auto" && len(fgColor) > 0 && fgColor[0] == '#' {
-		return fmt.Sprintf("#[fg=%s,bold]%s#[default]", fgColor, name)
+		style = style.Foreground(lipgloss.Color(fgColor))
+		// With background color
+		if bgColor != "" && bgColor != "auto" {
+			bgCol := bgColor
+			if colors, isGrad := gradients[bgColor]; isGrad && len(colors) > 0 {
+				bgCol = colors[0]
+			}
+			style = style.Background(lipgloss.Color(bgCol))
+		}
+		return style.Render(name)
+	}
+
+	// Background only (no foreground set) - use white text
+	if bgColor != "" && bgColor != "auto" {
+		bgCol := bgColor
+		if colors, isGrad := gradients[bgColor]; isGrad && len(colors) > 0 {
+			bgCol = colors[0]
+		}
+		style = style.Foreground(lipgloss.Color("#FAFAFA")).Background(lipgloss.Color(bgCol))
+		return style.Render(name)
 	}
 
 	// Default: white on purple
-	return fmt.Sprintf("#[fg=#FAFAFA,bg=%s,bold]%s#[default]", ColorPurple, name)
+	style = style.Foreground(lipgloss.Color("#FAFAFA")).Background(lipgloss.Color(ColorPurple))
+	return style.Render(name)
+}
+
+// applyLipglossGradient applies gradient colors to text using lipgloss
+func applyLipglossGradient(text string, colors []string) string {
+	if len(colors) == 0 || len(text) == 0 {
+		return text
+	}
+
+	runes := []rune(text)
+	var result strings.Builder
+
+	for i, r := range runes {
+		colorIdx := i * len(colors) / len(runes)
+		if colorIdx >= len(colors) {
+			colorIdx = len(colors) - 1
+		}
+		style := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(colors[colorIdx]))
+		result.WriteString(style.Render(string(r)))
+	}
+
+	return result.String()
 }

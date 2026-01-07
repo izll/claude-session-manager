@@ -87,6 +87,8 @@ func (m Model) View() string {
 		return m.stopChoiceView()
 	case stateConfirmStopTab:
 		return m.confirmStopTabView()
+	case stateConfirmYolo:
+		return m.confirmYoloView()
 	default:
 		return m.listView()
 	}

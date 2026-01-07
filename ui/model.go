@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -29,7 +28,7 @@ type rpmDownloadDoneMsg struct {
 // Version info
 const (
 	AppName    = "asmgr"
-	AppVersion = "0.6.1"
+	AppVersion = "0.6.5"
 )
 
 // Layout constants
@@ -96,6 +95,7 @@ const (
 	stateConfirmDeleteTab // Confirming tab deletion
 	stateStopChoice       // Choosing between stopping session or tab
 	stateConfirmStopTab   // Confirming tab stop
+	stateConfirmYolo      // Confirming YOLO mode toggle
 )
 
 // Model represents the main TUI application state for Claude Session Manager.
@@ -110,15 +110,20 @@ type Model struct {
 	height          int
 	nameInput       textinput.Model
 	pathInput       textinput.Model
-	promptInput     textinput.Model           // Input for sending text to session
+	promptInput     textarea.Model            // Textarea for sending multi-line text to session
 	promptSuggestion string                    // Autocomplete suggestion from agent
 	autoYes         bool
 	deleteTarget    *session.Instance
 	stopTarget      *session.Instance
+	yoloTarget      *session.Instance // Instance for YOLO confirmation
+	yoloWindowIndex int               // Window index for YOLO toggle (0 = main, >0 = tab)
+	yoloNewState    bool              // New YOLO state (true = enable, false = disable)
 	preview         string
 	err             error
 	successMsg      string                        // Success message to display
 	agentSessions       []session.AgentSession    // Agent sessions for current instance
+	resumeAgentType     session.AgentType         // Agent type for resume (active tab's agent)
+	resumeWindowIndex   int                       // Window index for resume (active tab's index)
 	sessionCursor       int                       // Cursor for Claude session selection
 	pendingInstance     *session.Instance         // Instance being created
 	isParallelSession   bool                      // True if creating parallel session (don't show resume)
@@ -160,9 +165,14 @@ type Model struct {
 	importTarget        *session.Project      // Project to import sessions into
 	previousState       state                 // Previous state to return to from error dialog
 	notesInput          textarea.Model        // Textarea for editing session notes
+	notesWindowIndex    int                   // Window index for notes editing (-1 = session, >=0 = tab)
 	newTabIsAgent       bool                  // Whether new tab should run agent (true) or shell (false)
 	newTabAgent         session.AgentType     // Agent type for new tab
 	newTabAgentCursor   int                   // Cursor for agent selection in new tab dialog
+
+	// Diff pane
+	diffPane       *DiffPane // Diff display component
+	showDiff       bool      // Show diff tab instead of preview
 }
 
 // visibleItem represents an item in the flattened list view (group header or session)
@@ -198,11 +208,13 @@ func NewModel() (Model, error) {
 	pathInput.Placeholder = "/path/to/project"
 	pathInput.CharLimit = 256
 
-	promptInput := textinput.New()
+	promptInput := textarea.New()
 	promptInput.Placeholder = "Enter message to send..."
-	promptInput.CharLimit = 1000
-	promptInput.Prompt = "" // Remove the default "> " prompt
-	promptInput.Cursor.SetMode(cursor.CursorStatic) // No blinking
+	promptInput.CharLimit = 5000
+	promptInput.ShowLineNumbers = false
+	promptInput.Prompt = ""
+	promptInput.SetHeight(10)
+	promptInput.SetWidth(60)
 
 	groupInput := textinput.New()
 	groupInput.Placeholder = "Group name"
@@ -249,6 +261,7 @@ func NewModel() (Model, error) {
 		isActive:            make(map[string]bool),
 		activityState:       make(map[string]session.SessionActivity),
 		windowActivityState: make(map[string]map[int]session.SessionActivity),
+		diffPane:            NewDiffPane(),
 	}
 
 	// Sessions will be loaded when user selects a project via switchToProject
@@ -523,6 +536,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleStopChoiceKeys(msg)
 		case stateConfirmStopTab:
 			return m.handleConfirmStopTabKeys(msg)
+		case stateConfirmYolo:
+			return m.handleConfirmYoloKeys(msg)
 		}
 	}
 
@@ -619,6 +634,11 @@ func (m Model) handleTick() (tea.Model, tea.Cmd) {
 			m.preview = "(error loading preview)"
 		} else {
 			m.preview = preview
+		}
+
+		// Update diff content if showing diff tab (only on slow tick to avoid git overload)
+		if m.showDiff && slowTick {
+			m.diffPane.SetDiff(selectedInst)
 		}
 	}
 	return m, tickCmd()

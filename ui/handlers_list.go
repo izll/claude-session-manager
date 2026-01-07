@@ -156,6 +156,39 @@ func (m *Model) getScrollableContent() string {
 	return m.preview
 }
 
+// scrollPreviewUp scrolls the preview up by the given number of lines
+func (m *Model) scrollPreviewUp(lines int) {
+	// Fetch extended content on first scroll
+	if m.scrollContent == "" {
+		inst := m.getSelectedInstance()
+		if inst != nil && inst.Status == session.StatusRunning {
+			m.scrollContent, _ = inst.GetPreview(ScrollbackLines)
+		}
+	}
+	content := m.getScrollableContent()
+	if content == "" {
+		return
+	}
+	contentLines := strings.Split(content, "\n")
+	maxLines := m.getPreviewMaxLines()
+	maxScroll := len(contentLines) - maxLines
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	m.previewScroll += lines
+	if m.previewScroll > maxScroll {
+		m.previewScroll = maxScroll
+	}
+}
+
+// scrollPreviewDown scrolls the preview down by the given number of lines
+func (m *Model) scrollPreviewDown(lines int) {
+	m.previewScroll -= lines
+	if m.previewScroll < 0 {
+		m.previewScroll = 0
+	}
+}
+
 // resetScroll resets scroll state when changing sessions
 func (m *Model) resetScroll() {
 	m.previewScroll = 0
@@ -254,12 +287,30 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q":
 		// Go back to project selector
 		m.saveSettings()
+		currentProjectID := ""
+		if m.activeProject != nil {
+			currentProjectID = m.activeProject.ID
+		}
 		m.storage.UnlockProject()
 		// Reload projects to refresh session counts
 		projectsData, _ := m.storage.LoadProjects()
 		m.projects = projectsData.Projects
+		// Find and select the project we just left
+		// List structure: projects (0..n-1), "No project" (n), "New Project" (n+1)
+		if currentProjectID == "" {
+			// Default/no project
+			m.projectCursor = len(m.projects)
+		} else {
+			// Find project index
+			m.projectCursor = len(m.projects) // fallback to "No project"
+			for i, p := range m.projects {
+				if p.ID == currentProjectID {
+					m.projectCursor = i
+					break
+				}
+			}
+		}
 		m.state = stateProjectSelect
-		m.projectCursor = 0
 		return m, nil
 
 	case "up", "k":
@@ -320,57 +371,60 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case "shift+up", "pgup", "shift+pgup", "K":
-		// Scroll preview up - fetch extended content on first scroll
-		if m.scrollContent == "" {
-			inst := m.getSelectedInstance()
-			if inst != nil && inst.Status == session.StatusRunning {
-				m.scrollContent, _ = inst.GetPreview(ScrollbackLines)
-			}
-		}
-		content := m.getScrollableContent()
-		if content == "" {
+	case "alt+up":
+		// Scroll diff pane or preview up (1 line)
+		if m.showDiff {
+			m.diffPane.ScrollUp()
 			break
 		}
-		lines := strings.Split(content, "\n")
-		maxLines := m.getPreviewMaxLines()
-		maxScroll := len(lines) - maxLines
-		if maxScroll < 0 {
-			maxScroll = 0
-		}
-		m.previewScroll += 5
-		if m.previewScroll > maxScroll {
-			m.previewScroll = maxScroll
-		}
+		m.scrollPreviewUp(1)
 
-	case "shift+down", "pgdown", "shift+pgdown", "J":
-		// Scroll preview down
-		m.previewScroll -= 5
-		if m.previewScroll < 0 {
-			m.previewScroll = 0
+	case "alt+down":
+		// Scroll diff pane or preview down (1 line)
+		if m.showDiff {
+			m.diffPane.ScrollDown()
+			break
 		}
+		m.scrollPreviewDown(1)
+
+	case "pgup", "alt+pgup":
+		// Scroll diff pane or preview up (half page)
+		if m.showDiff {
+			m.diffPane.PageUp()
+			break
+		}
+		halfPage := m.getPreviewMaxLines() / 2
+		if halfPage < 5 {
+			halfPage = 5
+		}
+		m.scrollPreviewUp(halfPage)
+
+	case "pgdown", "alt+pgdown":
+		// Scroll diff pane or preview down (half page)
+		if m.showDiff {
+			m.diffPane.PageDown()
+			break
+		}
+		halfPage := m.getPreviewMaxLines() / 2
+		if halfPage < 5 {
+			halfPage = 5
+		}
+		m.scrollPreviewDown(halfPage)
 
 	case "home":
-		// Scroll to top of preview - fetch extended content
-		if m.scrollContent == "" {
-			inst := m.getSelectedInstance()
-			if inst != nil && inst.Status == session.StatusRunning {
-				m.scrollContent, _ = inst.GetPreview(ScrollbackLines)
-			}
-		}
-		content := m.getScrollableContent()
-		if content == "" {
+		// Scroll to top
+		if m.showDiff {
+			m.diffPane.GotoTop()
 			break
 		}
-		lines := strings.Split(content, "\n")
-		maxLines := m.getPreviewMaxLines()
-		maxScroll := len(lines) - maxLines
-		if maxScroll > 0 {
-			m.previewScroll = maxScroll
-		}
+		m.scrollPreviewUp(10000) // Large number to go to top
 
 	case "end":
-		// Scroll to bottom of preview
+		// Scroll to bottom
+		if m.showDiff {
+			m.diffPane.GotoBottom()
+			break
+		}
 		m.previewScroll = 0
 
 	case "enter":
@@ -402,9 +456,27 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "N":
-		// Open notes editor for selected session
+		// Open notes editor for selected session or tab
 		if inst := m.getSelectedInstance(); inst != nil {
-			m.notesInput.SetValue(inst.Notes)
+			// Get current window index (0 = main, >0 = tab)
+			windowIdx := 0
+			if inst.Status == session.StatusRunning {
+				windowIdx = inst.GetCurrentWindowIndex()
+			}
+			m.notesWindowIndex = windowIdx
+
+			// Load notes for the current window
+			if windowIdx == 0 {
+				// Main session notes
+				m.notesInput.SetValue(inst.Notes)
+			} else {
+				// Tab notes
+				if fw := inst.GetFollowedWindow(windowIdx); fw != nil {
+					m.notesInput.SetValue(fw.Notes)
+				} else {
+					m.notesInput.SetValue("")
+				}
+			}
 			m.notesInput.Focus()
 			m.state = stateNotes
 			return m, nil
@@ -598,10 +670,30 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 							m.state = stateError
 							return m, nil
 						}
+						// Refresh status bar (may hide tabs if only 1 window left)
+						configureTmuxStatusBar(inst.TmuxSessionName(), inst.Name, inst.Color, inst.BgColor, inst.AutoYes)
 						m.storage.UpdateInstance(inst)
 						break
 					}
 				}
+			}
+		}
+
+	case "D":
+		// Toggle diff view in preview pane
+		m.showDiff = !m.showDiff
+		if m.showDiff {
+			if inst := m.getSelectedInstance(); inst != nil {
+				m.diffPane.SetDiff(inst)
+			}
+		}
+
+	case "F":
+		// Toggle diff mode (Session/Full) when in diff view
+		if m.showDiff {
+			m.diffPane.ToggleMode()
+			if inst := m.getSelectedInstance(); inst != nil {
+				m.diffPane.SetDiff(inst)
 			}
 		}
 
@@ -655,12 +747,6 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "U":
 		// Show update confirmation
 		m.state = stateConfirmUpdate
-		return m, nil
-
-	case "P":
-		// Go back to project selection
-		m.projectCursor = 0
-		m.state = stateProjectSelect
 		return m, nil
 
 	case "g":

@@ -16,8 +16,31 @@ func isGradientColor(color string) bool {
 	return exists
 }
 
-// configureTmuxStatusBar sets up the tmux status bar to display tabs
+// RefreshTmuxStatusBar is the exported version for external calls
+func RefreshTmuxStatusBar(sessionName, instanceName, fgColor, bgColor string, autoYes bool) {
+	// Simple version for backward compatibility - only main window YOLO
+	windowYolo := map[int]bool{0: autoYes}
+	configureTmuxStatusBarWithYolo(sessionName, instanceName, fgColor, bgColor, windowYolo)
+}
+
+// RefreshTmuxStatusBarFull is the full version with per-window YOLO support
+func RefreshTmuxStatusBarFull(sessionName, instanceName, fgColor, bgColor string, inst *session.Instance) {
+	// Build map of window index -> autoYes
+	windowYolo := map[int]bool{0: inst.AutoYes}
+	for _, fw := range inst.FollowedWindows {
+		windowYolo[fw.Index] = fw.AutoYes
+	}
+	configureTmuxStatusBarWithYolo(sessionName, instanceName, fgColor, bgColor, windowYolo)
+}
+
+// configureTmuxStatusBar is a backward compatible wrapper
 func configureTmuxStatusBar(sessionName, instanceName, fgColor, bgColor string, autoYes bool) {
+	windowYolo := map[int]bool{0: autoYes}
+	configureTmuxStatusBarWithYolo(sessionName, instanceName, fgColor, bgColor, windowYolo)
+}
+
+// configureTmuxStatusBarWithYolo sets up the tmux status bar with per-window YOLO support
+func configureTmuxStatusBarWithYolo(sessionName, instanceName, fgColor, bgColor string, windowYolo map[int]bool) {
 	target := sessionName + ":"
 
 	// Enable status bar
@@ -26,52 +49,83 @@ func configureTmuxStatusBar(sessionName, instanceName, fgColor, bgColor string, 
 	// Status bar style - dark background
 	exec.Command("tmux", "set-option", "-t", target, "status-style", "bg=#1a1a2e,fg=#888888").Run()
 
-	// Check if there are multiple windows
-	windowCountOutput, _ := exec.Command("tmux", "list-windows", "-t", sessionName, "-F", "x").Output()
-	windowCount := len(strings.Split(strings.TrimSpace(string(windowCountOutput)), "\n"))
+	// Get window list with names, index, active status, and dead status
+	windowListOutput, _ := exec.Command("tmux", "list-windows", "-t", sessionName, "-F", "#{window_index}:#{window_name}:#{window_active}:#{pane_dead}").Output()
+	windowLines := strings.Split(strings.TrimSpace(string(windowListOutput)), "\n")
 
-	// Left side: session name with colors (gradient or solid)
+	// Build status line with session name and tabs
 	formattedName := formatTmuxSessionName(instanceName, fgColor, bgColor)
-	var statusLeft string
-	if windowCount > 1 {
-		// Multiple windows - add separator
-		statusLeft = fmt.Sprintf("#[default,bg=#1a1a2e] %s #[default,nobold]#[fg=#555555,bg=#1a1a2e]│ ", formattedName)
-	} else {
-		// Single window - no separator, but show YOLO if enabled
-		if autoYes {
-			statusLeft = fmt.Sprintf("#[default,bg=#1a1a2e] %s #[fg=#FFA500,bold]YOLO !#[default] ", formattedName)
-		} else {
-			statusLeft = fmt.Sprintf("#[default,bg=#1a1a2e] %s ", formattedName)
-		}
-	}
-	exec.Command("tmux", "set-option", "-t", target, "status-left", statusLeft).Run()
-	// Increase length to accommodate gradient (each char has color codes)
-	exec.Command("tmux", "set-option", "-t", target, "status-left-length", "200").Run()
+	var statusLeft strings.Builder
+	statusLeft.WriteString(fmt.Sprintf("#[default,bg=#1a1a2e] %s ", formattedName))
 
-	// Right side: key hints
-	exec.Command("tmux", "set-option", "-t", target, "status-right", "#[default]#[fg=#555555,bg=#1a1a2e] Alt+</>: tabs | Ctrl+Q: detach ").Run()
-	exec.Command("tmux", "set-option", "-t", target, "status-right-length", "40").Run()
-
-	// Window options for tabs - only show if multiple windows
-	if windowCount > 1 {
-		// Inactive: gray text
-		exec.Command("tmux", "set-option", "-t", sessionName, "window-status-format", "#[fg=#888888]#{?pane_dead,○ ,}#W #[fg=#555555]│ ").Run()
-		// Active: white bold text, with ! if YOLO mode
-		if autoYes {
-			exec.Command("tmux", "set-option", "-t", sessionName, "window-status-current-format", "#[fg=#FAFAFA,bold]#{?pane_dead,○ ,}#W #[fg=#FFA500]!#[fg=#555555,nobold]│ ").Run()
-		} else {
-			exec.Command("tmux", "set-option", "-t", sessionName, "window-status-current-format", "#[fg=#FAFAFA,bold]#{?pane_dead,○ ,}#W #[fg=#555555,nobold]│ ").Run()
-		}
-	} else {
-		// Hide window list when only 1 window
-		exec.Command("tmux", "set-option", "-t", sessionName, "window-status-format", "").Run()
-		exec.Command("tmux", "set-option", "-t", sessionName, "window-status-current-format", "").Run()
+	windowCount := 0
+	if len(windowLines) > 0 && windowLines[0] != "" {
+		windowCount = len(windowLines)
 	}
 
-	// No separator
-	exec.Command("tmux", "set-option", "-t", sessionName, "window-status-separator", "").Run()
+	if windowCount > 1 {
+		statusLeft.WriteString("#[fg=#555555]| ")
 
-	// Key bindings for tab switching: Alt+Left/Right (global, -n = no prefix needed)
+		for _, line := range windowLines {
+			if line == "" {
+				continue
+			}
+			parts := strings.Split(line, ":")
+			if len(parts) < 4 {
+				continue
+			}
+			windowIndex := parts[0]
+			windowName := parts[1]
+			isActive := parts[2] == "1"
+			isDead := parts[3] == "1"
+
+			deadPrefix := ""
+			if isDead {
+				deadPrefix = "○ "
+			}
+
+			// Show YOLO indicator for this window if it has YOLO enabled
+			yoloIndicator := ""
+			winIdx := 0
+			fmt.Sscanf(windowIndex, "%d", &winIdx)
+			if windowYolo[winIdx] {
+				yoloIndicator = " #[fg=#FFA500]!"
+			}
+
+			if isActive {
+				statusLeft.WriteString(fmt.Sprintf("#[fg=#FAFAFA,bold]%s%s#[nobold]%s", deadPrefix, windowName, yoloIndicator))
+				statusLeft.WriteString("#[fg=#555555] | ")
+			} else {
+				statusLeft.WriteString(fmt.Sprintf("#[fg=#888888]%s%s%s #[fg=#555555]| ", deadPrefix, windowName, yoloIndicator))
+			}
+		}
+	} else if windowYolo[0] {
+		statusLeft.WriteString("#[fg=#FFA500,bold]YOLO !")
+	}
+
+	// Set status-left with our tab list
+	exec.Command("tmux", "set-option", "-t", target, "status-left", statusLeft.String()).Run()
+	exec.Command("tmux", "set-option", "-t", target, "status-left-length", "500").Run()
+
+	// Hide tmux's built-in window list
+	exec.Command("tmux", "set-option", "-t", target, "window-status-format", "").Run()
+	exec.Command("tmux", "set-option", "-t", target, "window-status-current-format", "").Run()
+	exec.Command("tmux", "set-option", "-t", target, "window-status-separator", "").Run()
+
+	// Use status-format to hide window list completely
+	statusFormat := fmt.Sprintf("#[align=left]%s#[align=right]#[fg=#555555]Alt+</>: tabs | Ctrl+Q: detach ", statusLeft.String())
+	exec.Command("tmux", "set-option", "-t", target, "status-format[0]", statusFormat).Run()
+
+	// Right side (backup, status-format overrides this)
+	exec.Command("tmux", "set-option", "-t", target, "status-right", "").Run()
+
+	// Hook to refresh status bar when window changes
+	refreshCmd := fmt.Sprintf("asmgr refresh-status %s", sessionName)
+	exec.Command("tmux", "set-hook", "-t", sessionName, "window-linked", fmt.Sprintf("run-shell '%s'", refreshCmd)).Run()
+	exec.Command("tmux", "set-hook", "-t", sessionName, "window-unlinked", fmt.Sprintf("run-shell '%s'", refreshCmd)).Run()
+	exec.Command("tmux", "set-hook", "-t", sessionName, "session-window-changed", fmt.Sprintf("run-shell '%s'", refreshCmd)).Run()
+
+	// Key bindings for tab switching
 	exec.Command("tmux", "bind-key", "-n", "M-Left", "previous-window").Run()
 	exec.Command("tmux", "bind-key", "-n", "M-Right", "next-window").Run()
 }
@@ -130,11 +184,11 @@ func (m *Model) handleEnterSession() tea.Cmd {
 	exec.Command("tmux", "set-hook", "-t", sessionName, "client-focus-in", "resize-window -A").Run()
 	exec.Command("tmux", "set-hook", "-t", sessionName, "pane-focus-in", "resize-window -A").Run()
 
-	// Update window name (removes any old " ! " prefix from YOLO mode)
-	exec.Command("tmux", "rename-window", "-t", sessionName, inst.Name).Run()
+	// Update window 0 name to agent type (session name is shown in status bar)
+	exec.Command("tmux", "rename-window", "-t", sessionName+":0", inst.WindowName()).Run()
 
-	// Configure tmux status bar to show tabs
-	configureTmuxStatusBar(sessionName, inst.Name, inst.Color, inst.BgColor, inst.AutoYes)
+	// Configure tmux status bar to show tabs with per-window YOLO support
+	RefreshTmuxStatusBarFull(sessionName, inst.Name, inst.Color, inst.BgColor, inst)
 
 	// Set up Ctrl+Q to resize to preview size before detach
 	tmuxWidth, tmuxHeight := m.calculateTmuxDimensions()
@@ -145,17 +199,50 @@ func (m *Model) handleEnterSession() tea.Cmd {
 	})
 }
 
-// handleResumeSession shows Claude sessions for the current instance
+// handleResumeSession shows agent sessions for the current instance's active tab
 func (m *Model) handleResumeSession() error {
 	inst := m.getSelectedInstance()
 	if inst == nil {
 		return nil
 	}
+
+	// Determine agent type based on active window
+	agentType := inst.Agent
+	if agentType == "" {
+		agentType = session.AgentClaude
+	}
+	activeWindowIndex := 0
+
+	// Check if there's an active followed window
+	if inst.Status == session.StatusRunning {
+		windows := inst.GetWindowList()
+		for _, w := range windows {
+			if w.Active {
+				activeWindowIndex = w.Index
+				if w.Followed {
+					// Find the followed window's agent type
+					for _, fw := range inst.FollowedWindows {
+						if fw.Index == w.Index {
+							agentType = fw.Agent
+							break
+						}
+					}
+				}
+				break
+			}
+		}
+	}
+
+	// Terminal windows don't support resume
+	if agentType == session.AgentTerminal {
+		return fmt.Errorf("terminal windows don't support session resume")
+	}
+
 	// List sessions based on agent type
 	var sessions []session.AgentSession
 	var err error
 
-	switch inst.Agent {
+	switch agentType {
 	case session.AgentGemini:
 		sessions, err = session.ListGeminiSessions(inst.Path)
 	case session.AgentCodex:
@@ -173,10 +260,12 @@ func (m *Model) handleResumeSession() error {
 		return err
 	}
 	if len(sessions) == 0 {
-		return fmt.Errorf("no previous %s sessions found", inst.Agent)
+		return fmt.Errorf("no previous %s sessions found", agentType)
 	}
 	m.agentSessions = sessions
-	m.sessionCursor = 1 // Start with first session selected (0 is "new session")
+	m.resumeAgentType = agentType           // Store which agent type we're resuming
+	m.resumeWindowIndex = activeWindowIndex // Store which window to resume
+	m.sessionCursor = 1                     // Start with first session selected (0 is "new session")
 	m.state = stateSelectAgentSession
 	return nil
 }
@@ -290,7 +379,7 @@ func (m *Model) handleSendPrompt() {
 	if inputWidth > PromptMaxWidth {
 		inputWidth = PromptMaxWidth
 	}
-	m.promptInput.Width = inputWidth
+	m.promptInput.SetWidth(inputWidth)
 	m.promptInput.Focus()
 
 	// Get suggestion from agent
@@ -313,21 +402,44 @@ func (m *Model) handleForceResize() {
 	}
 }
 
-// handleToggleAutoYes toggles the auto-yes flag on the selected session
-// Returns a tea.Cmd to attach to the session if it was restarted
+// handleToggleAutoYes shows confirmation dialog for toggling YOLO mode on the active tab
+// Returns a tea.Cmd (currently nil, confirmation happens in handleConfirmYoloKeys)
 func (m *Model) handleToggleAutoYes() tea.Cmd {
 	inst := m.getSelectedInstance()
 	if inst == nil {
 		return nil
 	}
 
-	// Get agent type (empty string means Claude for backward compatibility)
+	// Determine active window and its agent type
+	activeWindowIndex := 0
 	agentType := inst.Agent
 	if agentType == "" {
 		agentType = session.AgentClaude
 	}
+	currentYolo := inst.AutoYes
 
-	// Special handling for Gemini - send Ctrl+Y keystroke instead
+	// Check if session is running and has an active followed window
+	if inst.Status == session.StatusRunning {
+		windows := inst.GetWindowList()
+		for _, w := range windows {
+			if w.Active {
+				activeWindowIndex = w.Index
+				if w.Followed {
+					// Find the followed window's settings
+					for _, fw := range inst.FollowedWindows {
+						if fw.Index == w.Index {
+							agentType = fw.Agent
+							currentYolo = fw.AutoYes
+							break
+						}
+					}
+				}
+				break
+			}
+		}
+	}
+
+	// Special handling for Gemini - send Ctrl+Y keystroke instead (Gemini has its own confirmation)
 	if agentType == session.AgentGemini {
 		if inst.Status == session.StatusRunning {
 			if err := inst.SendKeys("C-y"); err != nil {
@@ -336,6 +448,14 @@ func (m *Model) handleToggleAutoYes() tea.Cmd {
 				m.state = stateError
 			}
 		}
+		return nil
+	}
+
+	// Terminal windows don't support YOLO
+	if agentType == session.AgentTerminal {
+		m.err = fmt.Errorf("terminal windows don't support YOLO mode")
+		m.previousState = stateList
+		m.state = stateError
 		return nil
 	}
 
@@ -348,22 +468,11 @@ func (m *Model) handleToggleAutoYes() tea.Cmd {
 		return nil
 	}
 
-	// Toggle AutoYes
-	wasRunning := inst.Status == session.StatusRunning
-	inst.AutoYes = !inst.AutoYes
-	m.storage.UpdateInstance(inst)
-
-	// If running, restart with new flag (no auto-attach in list view)
-	if wasRunning {
-		inst.Stop()
-		if err := inst.Start(); err != nil {
-			m.err = fmt.Errorf("failed to restart session: %w", err)
-			m.previousState = stateList
-			m.state = stateError
-			return nil
-		}
-		m.storage.UpdateInstance(inst)
-	}
+	// Show confirmation dialog
+	m.yoloTarget = inst
+	m.yoloWindowIndex = activeWindowIndex
+	m.yoloNewState = !currentYolo
+	m.state = stateConfirmYolo
 
 	return nil
 }

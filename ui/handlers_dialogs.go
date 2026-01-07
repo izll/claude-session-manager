@@ -302,16 +302,32 @@ func (m Model) handleSelectSessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			m.pendingInstance = nil
 		} else if inst := m.getSelectedInstance(); inst != nil {
-			// Resuming existing instance
-			if inst.Status == session.StatusRunning {
-				inst.Stop()
-			}
-			inst.ResumeSessionID = resumeID
-			if err := inst.StartWithResume(resumeID); err != nil {
-				m.err = err
+			// Resuming existing instance - apply to specific window
+			if m.resumeWindowIndex == 0 {
+				// Main window
+				inst.ResumeSessionID = resumeID
+				if inst.Status == session.StatusRunning {
+					// Respawn just the main window with new resume ID
+					inst.RespawnWindowWithResume(0, resumeID)
+				} else {
+					if err := inst.StartWithResume(resumeID); err != nil {
+						m.err = err
+					}
+				}
 			} else {
-				m.storage.UpdateInstance(inst)
+				// Followed window
+				for idx, fw := range inst.FollowedWindows {
+					if fw.Index == m.resumeWindowIndex {
+						inst.FollowedWindows[idx].ResumeSessionID = resumeID
+						if inst.Status == session.StatusRunning {
+							// Respawn just this window with new resume ID
+							inst.RespawnWindowWithResume(fw.Index, resumeID)
+						}
+						break
+					}
+				}
 			}
+			m.storage.UpdateInstance(inst)
 		}
 
 		m.agentSessions = nil
@@ -473,6 +489,17 @@ func (m Model) handleRenameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleHelpKeys handles keyboard input in the help view
 func (m Model) handleHelpKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Get actual line count from help content
+	_, totalLines := buildHelpContent(m.width)
+	maxLines := m.height - 3
+	if maxLines < 10 {
+		maxLines = 10
+	}
+	maxScroll := totalLines - maxLines
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+
 	switch msg.String() {
 	case "esc", "q", "?", "f1", "F1":
 		m.state = stateList
@@ -485,11 +512,13 @@ func (m Model) handleHelpKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "down", "j", "shift+down", "pgdown":
 		// Scroll down
-		m.helpScroll++
+		if m.helpScroll < maxScroll {
+			m.helpScroll++
+		}
 	case "home":
 		m.helpScroll = 0
 	case "end":
-		m.helpScroll = 999 // Will be clamped in view
+		m.helpScroll = maxScroll
 	}
 	return m, nil
 }
@@ -504,10 +533,10 @@ func (m Model) handlePromptKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Accept suggestion if available and input is empty
 		if m.promptSuggestion != "" && m.promptInput.Value() == "" {
 			m.promptInput.SetValue(m.promptSuggestion)
-			m.promptInput.CursorEnd()
 			return m, nil
 		}
-	case "enter":
+	case "ctrl+s", "ctrl+enter":
+		// Send message with Ctrl+S or Ctrl+Enter
 		if m.promptInput.Value() != "" {
 			if inst := m.getSelectedInstance(); inst != nil && inst.Status == session.StatusRunning {
 				// Send prompt text followed by Enter in a single command
@@ -854,9 +883,21 @@ func (m Model) handleNotesKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "ctrl+s":
-		// Save notes
+		// Save notes to session or tab
 		if inst := m.getSelectedInstance(); inst != nil {
-			inst.Notes = m.notesInput.Value()
+			notes := m.notesInput.Value()
+			if m.notesWindowIndex == 0 {
+				// Main session notes
+				inst.Notes = notes
+			} else {
+				// Tab notes - find and update the FollowedWindow
+				for i := range inst.FollowedWindows {
+					if inst.FollowedWindows[i].Index == m.notesWindowIndex {
+						inst.FollowedWindows[i].Notes = notes
+						break
+					}
+				}
+			}
 			m.storage.UpdateInstance(inst)
 		}
 		m.state = stateList
@@ -926,6 +967,8 @@ func (m Model) handleNewTabKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					// Create terminal window (tracked for restore)
 					inst.NewWindowWithName(name)
 				}
+				// Refresh status bar to show tab list
+				configureTmuxStatusBar(inst.TmuxSessionName(), inst.Name, inst.Color, inst.BgColor, inst.AutoYes)
 				m.storage.UpdateInstance(inst) // Save followed windows
 			}
 		}
@@ -1064,6 +1107,8 @@ func (m Model) handleConfirmDeleteTabKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						m.previousState = stateList
 						m.state = stateError
 					} else {
+						// Refresh status bar (may hide tabs if only 1 window left)
+						configureTmuxStatusBar(m.deleteTarget.TmuxSessionName(), m.deleteTarget.Name, m.deleteTarget.Color, m.deleteTarget.BgColor, m.deleteTarget.AutoYes)
 						m.storage.UpdateInstance(m.deleteTarget)
 					}
 					break
@@ -1122,6 +1167,58 @@ func (m Model) handleConfirmStopTabKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.state = stateList
 	case "n", "N", "esc":
 		m.stopTarget = nil
+		m.state = stateList
+	}
+	return m, nil
+}
+
+// handleConfirmYoloKeys handles keyboard input in the YOLO mode confirmation dialog
+func (m Model) handleConfirmYoloKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		if m.yoloTarget != nil {
+			inst := m.yoloTarget
+			wasRunning := inst.Status == session.StatusRunning
+
+			// Toggle YOLO for the correct window
+			if m.yoloWindowIndex == 0 {
+				inst.AutoYes = m.yoloNewState
+			} else {
+				for idx, fw := range inst.FollowedWindows {
+					if fw.Index == m.yoloWindowIndex {
+						inst.FollowedWindows[idx].AutoYes = m.yoloNewState
+						break
+					}
+				}
+			}
+
+			m.storage.UpdateInstance(inst)
+
+			// If running, respawn the window with new flag
+			if wasRunning {
+				if m.yoloWindowIndex == 0 {
+					// Main window - restart session
+					inst.Stop()
+					if err := inst.Start(); err != nil {
+						m.err = fmt.Errorf("failed to restart session: %w", err)
+						m.previousState = stateList
+						m.state = stateError
+						m.yoloTarget = nil
+						return m, nil
+					}
+					m.storage.UpdateInstance(inst)
+				} else {
+					// Tab window - respawn just that window
+					inst.RespawnWindow(m.yoloWindowIndex)
+				}
+				// Refresh tmux status bar
+				RefreshTmuxStatusBarFull(inst.TmuxSessionName(), inst.Name, inst.Color, inst.BgColor, inst)
+			}
+		}
+		m.yoloTarget = nil
+		m.state = stateList
+	case "n", "N", "esc":
+		m.yoloTarget = nil
 		m.state = stateList
 	}
 	return m, nil

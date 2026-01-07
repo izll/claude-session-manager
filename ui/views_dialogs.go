@@ -127,7 +127,7 @@ func (m Model) renameView() string {
 }
 
 // promptView renders the prompt input dialog overlaid on the list view
-func (m Model) promptView() string {
+func (m *Model) promptView() string {
 	var boxContent strings.Builder
 	boxContent.WriteString("\n\n")
 
@@ -135,30 +135,45 @@ func (m Model) promptView() string {
 		boxContent.WriteString(fmt.Sprintf("  Session: %s\n\n", inst.Name))
 	}
 
+	// Dynamic box width
+	boxWidth := 70
+	if m.width > 100 {
+		boxWidth = 80
+	}
+	if boxWidth > 90 {
+		boxWidth = 90
+	}
+
+	// Set textarea width to box width minus padding
+	m.promptInput.SetWidth(boxWidth - 6)
+
 	boxContent.WriteString("  Message:\n")
-	boxContent.WriteString("  > " + m.promptInput.View() + "\n")
+
+	// Indent each line of textarea by 2 spaces
+	textareaView := m.promptInput.View()
+	lines := strings.Split(textareaView, "\n")
+	for i, line := range lines {
+		boxContent.WriteString("  " + line)
+		if i < len(lines)-1 {
+			boxContent.WriteString("\n")
+		}
+	}
+	boxContent.WriteString("\n")
 
 	// Show suggestion if available and input is empty
 	if m.promptSuggestion != "" && m.promptInput.Value() == "" {
 		suggestionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).Italic(true)
-		boxContent.WriteString(suggestionStyle.Render(fmt.Sprintf("    → %s", m.promptSuggestion)) + "\n")
+		boxContent.WriteString(suggestionStyle.Render(fmt.Sprintf("  → %s", m.promptSuggestion)) + "\n")
 	}
 
 	boxContent.WriteString("\n")
-	helpText := "  enter: send  esc: cancel"
+
+	helpText := "  ctrl+s: send  esc: cancel"
 	if m.promptSuggestion != "" {
-		helpText = "  tab: accept  enter: send  esc: cancel"
+		helpText = "  tab: accept  ctrl+s: send  esc: cancel"
 	}
 	boxContent.WriteString(helpStyle.Render(helpText))
 	boxContent.WriteString("\n")
-
-	boxWidth := 60
-	if m.width > 80 {
-		boxWidth = m.width / 2
-	}
-	if boxWidth > 80 {
-		boxWidth = 80
-	}
 
 	return m.renderOverlayDialog(" Send Message ", boxContent.String(), boxWidth, "#7D56F4")
 }
@@ -434,8 +449,33 @@ func (m *Model) notesView() string {
 	var boxContent strings.Builder
 	boxContent.WriteString("\n\n")
 
+	// Determine title and context based on window index
+	title := " Session Notes "
 	if inst := m.getSelectedInstance(); inst != nil {
-		boxContent.WriteString(fmt.Sprintf("  Session: %s\n\n", inst.Name))
+		// If there are multiple tabs, always show "Tab Notes"
+		hasTabs := len(inst.FollowedWindows) > 0
+		if hasTabs {
+			title = " Tab Notes "
+			tabName := ""
+			if m.notesWindowIndex == 0 {
+				// Main window - use instance name
+				tabName = inst.Name
+			} else {
+				// Find tab name from FollowedWindows
+				for _, fw := range inst.FollowedWindows {
+					if fw.Index == m.notesWindowIndex {
+						tabName = fw.Name
+						break
+					}
+				}
+			}
+			if tabName != "" {
+				boxContent.WriteString(fmt.Sprintf("  Tab: %s\n\n", tabName))
+			}
+		} else {
+			// Single window - show session notes
+			boxContent.WriteString(fmt.Sprintf("  Session: %s\n\n", inst.Name))
+		}
 	}
 
 	// Dynamic box width (1.5x larger)
@@ -466,7 +506,7 @@ func (m *Model) notesView() string {
 	boxContent.WriteString(helpStyle.Render(helpText))
 	boxContent.WriteString("\n")
 
-	return m.renderOverlayDialog(" Session Notes ", boxContent.String(), boxWidth, "#7D56F4")
+	return m.renderOverlayDialog(title, boxContent.String(), boxWidth, "#7D56F4")
 }
 
 // newTabChoiceView renders the Agent/Terminal choice dialog
@@ -653,4 +693,40 @@ func (m Model) confirmStopTabView() string {
 	boxContent.WriteString("\n")
 
 	return m.renderOverlayDialog(" Confirm Stop Tab ", boxContent.String(), 45, "#FFA500")
+}
+
+// confirmYoloView renders the YOLO mode confirmation dialog
+func (m Model) confirmYoloView() string {
+	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
+	var boxContent strings.Builder
+
+	inst := m.yoloTarget
+	if inst == nil {
+		return m.listView()
+	}
+
+	// Determine what we're toggling
+	var targetName string
+	if m.yoloWindowIndex == 0 {
+		targetName = inst.Name
+	} else {
+		for _, fw := range inst.FollowedWindows {
+			if fw.Index == m.yoloWindowIndex {
+				targetName = fmt.Sprintf("%s (tab: %s)", inst.Name, fw.Name)
+				break
+			}
+		}
+	}
+
+	if m.yoloNewState {
+		boxContent.WriteString(fmt.Sprintf("\n\n Enable YOLO mode for:\n %s?\n\n", targetName))
+		boxContent.WriteString(" ⚠️  Agent will auto-approve all actions!\n\n")
+	} else {
+		boxContent.WriteString(fmt.Sprintf("\n\n Disable YOLO mode for:\n %s?\n\n", targetName))
+	}
+
+	boxContent.WriteString(helpStyle.Render("  y: yes  n: no"))
+	boxContent.WriteString("\n")
+
+	return m.renderOverlayDialog(" Confirm YOLO ", boxContent.String(), 45, "#FFA500")
 }

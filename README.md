@@ -37,8 +37,9 @@ A powerful terminal UI (TUI) application for managing multiple AI coding assista
 - **Fancy Status Bar** - Styled bottom bar with highlighted keys, toggle indicators, and separators
 - **Scrollable Help View** - Comprehensive help page with keyboard shortcuts, detailed descriptions, and scroll support
 - **Session Groups** - Organize sessions into collapsible groups for better organization
-- **Session Notes** - Add persistent notes/comments to sessions (stays with session, not conversation)
+- **Session Notes** - Add persistent notes/comments to sessions and tabs
 - **Split View** - Compare two sessions side-by-side with pinned preview
+- **Diff View** - View git changes in preview pane (session diff or full uncommitted)
 
 ## Installation
 
@@ -84,7 +85,7 @@ chmod +x install.sh
 Install options:
 ```bash
 ./install.sh              # Install latest version to ~/.local/bin
-./install.sh -v 0.6.1     # Install specific version
+./install.sh -v 0.6.5     # Install specific version
 ./install.sh -d /usr/local/bin  # Install to custom directory
 ./install.sh -u           # Update existing installation
 ```
@@ -94,15 +95,15 @@ Install options:
 **Debian/Ubuntu (.deb):**
 ```bash
 # Download from releases
-wget https://github.com/izll/agent-session-manager/releases/download/v0.6.1/asmgr_0.6.1_linux_amd64.deb
-sudo dpkg -i asmgr_0.6.1_linux_amd64.deb
+wget https://github.com/izll/agent-session-manager/releases/download/v0.6.5/asmgr_0.6.5_linux_amd64.deb
+sudo dpkg -i asmgr_0.6.5_linux_amd64.deb
 ```
 
 **RedHat/Fedora/Rocky (.rpm):**
 ```bash
 # Download from releases
-wget https://github.com/izll/agent-session-manager/releases/download/v0.6.1/asmgr_0.6.1_linux_x86_64.rpm
-sudo rpm -i asmgr_0.6.1_linux_x86_64.rpm
+wget https://github.com/izll/agent-session-manager/releases/download/v0.6.5/asmgr_0.6.5_linux_x86_64.rpm
+sudo rpm -i asmgr_0.6.5_linux_x86_64.rpm
 ```
 
 ### Build from Source
@@ -173,8 +174,10 @@ asmgr
 | `k` / `↑` | Move cursor up |
 | `Ctrl+↓` | Move session down (reorder) |
 | `Ctrl+↑` | Move session up (reorder) |
-| `J` / `Shift+↓` / `PgDn` | Scroll preview down |
-| `K` / `Shift+↑` / `PgUp` | Scroll preview up |
+| `Alt+↓` | Scroll preview down (1 line) |
+| `Alt+↑` | Scroll preview up (1 line) |
+| `PgDn` | Scroll preview down (half page) |
+| `PgUp` | Scroll preview up (half page) |
 | `Home` | Scroll preview to top |
 | `End` | Scroll preview to bottom |
 
@@ -189,7 +192,7 @@ asmgr
 | `e` | Rename session |
 | `r` | Resume previous conversation or start new (supports Claude, Gemini, Codex, OpenCode, Amazon Q) |
 | `p` | Send prompt/message to running session |
-| `N` | Add/edit session notes |
+| `N` | Add/edit notes (session or tab) |
 | `d` | Delete session or tab (asks which when multiple tabs exist) |
 
 #### Tabs (Multi-Window Sessions)
@@ -230,10 +233,18 @@ asmgr
 | `m` | Mark/pin session for top pane |
 | `Tab` | Switch focus between split panes |
 
+#### Diff View
+| Key | Action |
+|-----|--------|
+| `D` | Toggle between Preview and Diff |
+| `F` | Switch between Session diff and Full diff |
+
+> **Session diff** shows changes since session start. **Full diff** shows all uncommitted changes.
+
 #### Projects
 | Key | Action |
 |-----|--------|
-| `P` | Return to project selector |
+| `q` | Quit to project selector |
 | `n` | Create new project (in project selector) |
 | `e` | Rename project (in project selector) |
 | `d` | Delete project (in project selector) |
@@ -245,7 +256,6 @@ asmgr
 | `U` | Check for updates and install (built-in self-update) |
 | `R` | Force resize preview pane |
 | `F1` / `?` | Show help |
-| `q` | Quit |
 
 ### Inside Attached Session
 | Key | Action |
@@ -325,16 +335,17 @@ Sessions without a group appear at the bottom of the list.
 
 ## Session Notes
 
-Add persistent notes to any session that stay with the session even when you change the resume conversation:
+Add persistent notes to sessions and individual tabs:
 
-- Press `N` (Shift+N) on any session to open the notes editor
+- Press `N` (Shift+N) to open the notes editor
+- When a session has multiple tabs, notes are per-tab
 - Write multi-line notes (Enter for new lines)
 - `Ctrl+S` to save, `Esc` to cancel, `Ctrl+D` to clear
-- Notes are shown in the preview pane below the session info
+- Notes are shown in the preview pane below the session/tab info
 - Notes persist across session restarts and conversation changes
 
 Use notes to track:
-- Current task/goal for each session
+- Current task/goal for each session or tab
 - Important context or decisions
 - TODOs and reminders
 - Handoff notes when switching between sessions
@@ -386,6 +397,21 @@ Compare two sessions side-by-side:
 
 The pinned session stays visible while you browse other sessions, useful for comparing outputs or referencing one session while working in another.
 
+## Diff View
+
+View git changes directly in the preview pane:
+
+- Press `D` to toggle between Preview and Diff view
+- Press `F` to switch between Session diff and Full diff
+
+**Session diff** shows changes since the session was started (tracked via git HEAD at start time).
+**Full diff** shows all uncommitted changes in the repository.
+
+Use diff view to:
+- Review changes made by the AI agent
+- Track progress during a coding session
+- Compare uncommitted changes across sessions
+
 ## Projects
 
 Projects allow you to organize your sessions into separate workspaces. Each project has its own isolated session list and groups.
@@ -397,7 +423,7 @@ When you start ASMGR, you'll see the project selector:
 ```
 ┌─────────────────────────────────────┐
 │  Agent Session Manager              │
-│             v0.6.1                  │
+│             v0.6.5                  │
 ├─────────────────────────────────────┤
 │  > Backend API         [5 sessions] │
 │    Frontend App        [3 sessions] │

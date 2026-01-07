@@ -10,24 +10,7 @@ import (
 
 // projectSelectView renders the project selection screen
 func (m Model) projectSelectView() string {
-	var b strings.Builder
-
-	// Title
-	title := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(ColorWhite)).
-		Background(lipgloss.Color(ColorPurple)).
-		Bold(true).
-		Padding(0, 2).
-		Render(" Agent Session Manager ")
-
-	b.WriteString("\n")
-	b.WriteString(lipgloss.PlaceHorizontal(m.width, lipgloss.Center, title))
-	b.WriteString("\n")
-	version := dimStyle.Render(fmt.Sprintf("v%s", AppVersion))
-	b.WriteString(lipgloss.PlaceHorizontal(m.width, lipgloss.Center, version))
-	b.WriteString("\n\n")
-
-	// Calculate box width
+	// Calculate box width first (needed for centering)
 	boxWidth := 50
 	if m.width > 60 {
 		boxWidth = m.width / 2
@@ -36,8 +19,18 @@ func (m Model) projectSelectView() string {
 		boxWidth = 80
 	}
 
-	// Build the project list
 	var content strings.Builder
+
+	// Title - with ice gradient
+	title := " " + applyLipglossGradient("Agent Session Manager", gradients["gradient-ice"]) + " "
+
+	content.WriteString("\n")
+	content.WriteString(lipgloss.PlaceHorizontal(boxWidth, lipgloss.Center, title))
+	content.WriteString("\n\n")
+
+	// Build the project list
+	var listContent strings.Builder
+	listContent.WriteString("\n") // Extra empty line after top border
 
 	// Projects first
 	projectNameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPurple)).Bold(true)
@@ -52,17 +45,17 @@ func (m Model) projectSelectView() string {
 		}
 
 		if i == m.projectCursor {
-			content.WriteString(listSelectedStyle.Render(fmt.Sprintf("> %s%s%s", project.Name, strings.Repeat(" ", padding), countStr)))
+			listContent.WriteString(listSelectedStyle.Render(fmt.Sprintf("> %s%s%s", project.Name, strings.Repeat(" ", padding), countStr)))
 		} else {
-			content.WriteString(fmt.Sprintf("  %s%s%s", projectNameStyle.Render(project.Name), strings.Repeat(" ", padding), dimStyle.Render(countStr)))
+			listContent.WriteString(fmt.Sprintf("  %s%s%s", projectNameStyle.Render(project.Name), strings.Repeat(" ", padding), dimStyle.Render(countStr)))
 		}
-		content.WriteString("\n")
+		listContent.WriteString("\n")
 	}
 
 	// Separator after projects
 	if len(m.projects) > 0 {
-		content.WriteString(dimStyle.Render("  " + strings.Repeat("─", boxWidth-4)))
-		content.WriteString("\n")
+		listContent.WriteString(dimStyle.Render("  " + strings.Repeat("─", boxWidth-4)))
+		listContent.WriteString("\n")
 	}
 
 	// Continue without project option (after projects)
@@ -75,30 +68,57 @@ func (m Model) projectSelectView() string {
 		defaultPadding = 1
 	}
 	if m.projectCursor == continueIdx {
-		content.WriteString(listSelectedStyle.Render(fmt.Sprintf("> [ ] %s%s%s", defaultText, strings.Repeat(" ", defaultPadding), defaultCountStr)))
+		listContent.WriteString(listSelectedStyle.Render(fmt.Sprintf("> [ ] %s%s%s", defaultText, strings.Repeat(" ", defaultPadding), defaultCountStr)))
 	} else {
-		content.WriteString(fmt.Sprintf("  [ ] %s%s%s", defaultText, strings.Repeat(" ", defaultPadding), dimStyle.Render(defaultCountStr)))
+		listContent.WriteString(fmt.Sprintf("  [ ] %s%s%s", defaultText, strings.Repeat(" ", defaultPadding), dimStyle.Render(defaultCountStr)))
 	}
-	content.WriteString("\n")
+	listContent.WriteString("\n")
 
 	// New Project option (always last)
 	newProjectIdx := len(m.projects) + 1
 	if m.projectCursor == newProjectIdx {
-		content.WriteString(listSelectedStyle.Render("> [+] New Project"))
+		listContent.WriteString(listSelectedStyle.Render("> [+] New Project"))
 	} else {
-		content.WriteString("  [+] New Project")
+		listContent.WriteString("  [+] New Project")
 	}
-	content.WriteString("\n")
+	listContent.WriteString("\n")
 
-	// Wrap in a box
+	// Wrap in a box (without bottom border - we'll add it manually with version)
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(ColorPurple)).
 		Padding(1, 2).
 		Width(boxWidth)
 
-	b.WriteString(lipgloss.PlaceHorizontal(m.width, lipgloss.Center, boxStyle.Render(content.String())))
-	b.WriteString("\n\n")
+	boxRendered := boxStyle.Render(listContent.String())
+
+	// Replace the last line (bottom border) with version embedded
+	lines := strings.Split(boxRendered, "\n")
+	if len(lines) > 1 {
+		// Get actual box width from the first line (top border)
+		actualWidth := lipgloss.Width(lines[0])
+
+		// Build custom bottom border with version
+		version := fmt.Sprintf(" v%s ", AppVersion)
+		borderColor := lipgloss.Color(ColorPurple)
+		borderStyle := lipgloss.NewStyle().Foreground(borderColor)
+		versionStyle := dimStyle
+
+		// Calculate dashes: actualWidth = 1 (╰) + dashes + versionLen + 1 (╯)
+		versionLen := len(version)
+		leftDashes := actualWidth - versionLen - 2
+		if leftDashes < 1 {
+			leftDashes = 1
+		}
+
+		bottomBorder := borderStyle.Render("╰" + strings.Repeat("─", leftDashes)) +
+			versionStyle.Render(version) +
+			borderStyle.Render("╯")
+
+		lines[len(lines)-1] = bottomBorder
+	}
+	content.WriteString(strings.Join(lines, "\n"))
+	content.WriteString("\n\n")
 
 	// Help text with styled keys (same as status bar)
 	keyStyle := lipgloss.NewStyle().
@@ -126,9 +146,10 @@ func (m Model) projectSelectView() string {
 	}
 
 	helpText := strings.Join(helpItems, sep)
-	b.WriteString(lipgloss.PlaceHorizontal(m.width, lipgloss.Center, helpText))
+	content.WriteString(helpText)
 
-	return b.String()
+	// Center vertically and horizontally
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content.String())
 }
 
 // newProjectView renders the new project creation dialog

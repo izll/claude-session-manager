@@ -74,10 +74,18 @@ func (m Model) renderSessionRow(inst *session.Instance, index int, listWidth int
 	styledName := m.getStyledName(inst, name)
 	selected := index == m.cursor
 
+	// Count non-terminal followed windows (agent tabs)
+	agentTabCount := 0
+	for _, fw := range inst.FollowedWindows {
+		if fw.Agent != session.AgentTerminal {
+			agentTabCount++
+		}
+	}
+
 	// Append agent icon if enabled (but not if there are multiple agent tabs)
 	displayName := name
 	displayStyledName := styledName
-	if m.showAgentIcons && len(inst.FollowedWindows) == 0 {
+	if m.showAgentIcons && agentTabCount == 0 {
 		icon := " " + getAgentIcon(inst.Agent)
 		displayName = name + icon
 		displayStyledName = styledName + icon
@@ -121,7 +129,15 @@ func (m Model) renderSessionRow(inst *session.Instance, index int, listWidth int
 
 		// Main agent status (window 0)
 		lastLine := m.getLastLine(inst)
-		row.WriteString(connectorStyle.Render("     "+mainConnector+" ") + mainTextStyle.Render(lastLine))
+		mainIcon := ""
+		if m.showAgentIcons && len(displayWindows) > 0 {
+			agent := inst.Agent
+			if agent == "" {
+				agent = session.AgentClaude
+			}
+			mainIcon = " " + getAgentIcon(agent)
+		}
+		row.WriteString(connectorStyle.Render("     "+mainConnector+" ") + mainTextStyle.Render(lastLine) + mainIcon)
 		row.WriteString("\n")
 
 		// Additional followed windows (excluding terminals)
@@ -143,7 +159,11 @@ func (m Model) renderSessionRow(inst *session.Instance, index int, listWidth int
 			if i == len(displayWindows)-1 {
 				connector = "└─"
 			}
-			row.WriteString(connectorStyle.Render("     "+connector+" ") + fwTextStyle.Render(fwLine))
+			fwIcon := ""
+			if m.showAgentIcons {
+				fwIcon = " " + getAgentIcon(fw.Agent)
+			}
+			row.WriteString(connectorStyle.Render("     "+connector+" ") + fwTextStyle.Render(fwLine) + fwIcon)
 			row.WriteString("\n")
 		}
 	}
@@ -555,10 +575,18 @@ func (m Model) renderGroupedSessionRow(inst *session.Instance, index int, listWi
 	styledName := m.getStyledName(inst, name)
 	selected := index == m.cursor
 
+	// Count non-terminal followed windows (agent tabs)
+	agentTabCount := 0
+	for _, fw := range inst.FollowedWindows {
+		if fw.Agent != session.AgentTerminal {
+			agentTabCount++
+		}
+	}
+
 	// Append agent icon if enabled (but not if there are multiple agent tabs)
 	displayName := name
 	displayStyledName := styledName
-	if m.showAgentIcons && len(inst.FollowedWindows) == 0 {
+	if m.showAgentIcons && agentTabCount == 0 {
 		icon := " " + getAgentIcon(inst.Agent)
 		displayName = name + icon
 		displayStyledName = styledName + icon
@@ -610,7 +638,15 @@ func (m Model) renderGroupedSessionRow(inst *session.Instance, index int, listWi
 
 		// Main agent status (window 0)
 		lastLine := m.getLastLine(inst)
-		row.WriteString(connectorStyle.Render(fmt.Sprintf(" %s  %s ", lastLinePrefix, mainConnector)) + mainTextStyle.Render(lastLine))
+		mainIcon := ""
+		if m.showAgentIcons && len(displayWindows) > 0 {
+			agent := inst.Agent
+			if agent == "" {
+				agent = session.AgentClaude
+			}
+			mainIcon = " " + getAgentIcon(agent)
+		}
+		row.WriteString(connectorStyle.Render(fmt.Sprintf(" %s  %s ", lastLinePrefix, mainConnector)) + mainTextStyle.Render(lastLine) + mainIcon)
 		row.WriteString("\n")
 
 		// Additional followed windows (excluding terminals)
@@ -632,7 +668,11 @@ func (m Model) renderGroupedSessionRow(inst *session.Instance, index int, listWi
 			if i == len(displayWindows)-1 {
 				connector = "└─"
 			}
-			row.WriteString(connectorStyle.Render(fmt.Sprintf(" %s  %s ", lastLinePrefix, connector)) + fwTextStyle.Render(fwLine))
+			fwIcon := ""
+			if m.showAgentIcons {
+				fwIcon = " " + getAgentIcon(fw.Agent)
+			}
+			row.WriteString(connectorStyle.Render(fmt.Sprintf(" %s  %s ", lastLinePrefix, connector)) + fwTextStyle.Render(fwLine) + fwIcon)
 			row.WriteString("\n")
 		}
 	}

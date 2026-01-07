@@ -7,8 +7,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// helpView renders the help screen
-func (m Model) helpView() string {
+// buildHelpContent generates the help content and returns the content string and line count
+func buildHelpContent(width int) (string, int) {
 	var b strings.Builder
 
 	// Styles
@@ -44,7 +44,7 @@ func (m Model) helpView() string {
 		Padding(0, 3).
 		Render(" Agent Session Manager - Help ")
 
-	b.WriteString(lipgloss.PlaceHorizontal(m.width, lipgloss.Center, title))
+	b.WriteString(lipgloss.PlaceHorizontal(width, lipgloss.Center, title))
 	b.WriteString("\n\n")
 
 	// Helper for rendering key-description pairs
@@ -75,7 +75,9 @@ func (m Model) helpView() string {
 	b.WriteString("\n")
 	b.WriteString(renderRow("↑/k ↓/j", "Move up/down", "Ctrl+↑/↓", "Reorder session"))
 	b.WriteString("\n")
-	b.WriteString(renderRow("Shift+↑/↓", "Scroll preview", "Home/End", "Preview top/bottom"))
+	b.WriteString(renderRow("Alt+↑/↓", "Scroll line", "PgUp/PgDn", "Scroll half page"))
+	b.WriteString("\n")
+	b.WriteString("  " + renderKey("Home/End", "Scroll to top/bottom"))
 	b.WriteString("\n\n")
 
 	// ═══════════════════════════════════════════════════════════════════
@@ -135,6 +137,8 @@ func (m Model) helpView() string {
 	b.WriteString("\n")
 	b.WriteString(renderRow("N", "Edit notes", "c", "Colors & gradients"))
 	b.WriteString("\n")
+	b.WriteString("  " + noteStyle.Render("     ↳ N edits tab notes when multiple tabs exist"))
+	b.WriteString("\n")
 	b.WriteString(renderRow("l", "Compact mode", "o", "Toggle status lines"))
 	b.WriteString("\n")
 	b.WriteString(renderRow("I", "Toggle icons", "^Y", "Toggle YOLO mode"))
@@ -153,17 +157,31 @@ func (m Model) helpView() string {
 	b.WriteString("\n\n")
 
 	// ═══════════════════════════════════════════════════════════════════
+	// DIFF VIEW
+	// ═══════════════════════════════════════════════════════════════════
+	b.WriteString(sectionStyle.Render("  Diff View"))
+	b.WriteString("\n")
+	b.WriteString(separatorStyle.Render("  " + strings.Repeat("─", 65)))
+	b.WriteString("\n")
+	b.WriteString(renderRow("D", "Toggle Preview/Diff", "F", "Switch Session/Full diff"))
+	b.WriteString("\n")
+	b.WriteString("  " + noteStyle.Render("     ↳ Session diff: changes since session start"))
+	b.WriteString("\n")
+	b.WriteString("  " + noteStyle.Render("     ↳ Full diff: all uncommitted changes"))
+	b.WriteString("\n\n")
+
+	// ═══════════════════════════════════════════════════════════════════
 	// PROJECTS & OTHER
 	// ═══════════════════════════════════════════════════════════════════
 	b.WriteString(sectionStyle.Render("  Projects & Other"))
 	b.WriteString("\n")
 	b.WriteString(separatorStyle.Render("  " + strings.Repeat("─", 65)))
 	b.WriteString("\n")
-	b.WriteString(renderRow("P", "Project selector", "i", "Import sessions"))
+	b.WriteString(renderRow("q", "Quit to projects", "i", "Import sessions"))
 	b.WriteString("\n")
 	b.WriteString(renderRow("U", "Check updates", "R", "Force resize"))
 	b.WriteString("\n")
-	b.WriteString(renderRow("?", "Help", "q", "Quit"))
+	b.WriteString("  " + renderKey("?", "Help"))
 	b.WriteString("\n\n")
 
 	// ═══════════════════════════════════════════════════════════════════
@@ -206,8 +224,15 @@ func (m Model) helpView() string {
 	b.WriteString(infoStyle.Render("  github.com/izll/agent-session-manager"))
 	b.WriteString("\n\n")
 
-	// Get all content lines
-	allContent := b.String()
+	content := b.String()
+	lineCount := len(strings.Split(content, "\n"))
+	return content, lineCount
+}
+
+// helpView renders the help screen
+func (m Model) helpView() string {
+	// Get help content
+	allContent, _ := buildHelpContent(m.width)
 	allLines := strings.Split(allContent, "\n")
 
 	// Calculate visible area

@@ -12,9 +12,40 @@ import (
 func (m Model) buildPreviewPane(contentHeight int) string {
 	var rightPane strings.Builder
 
-	// Header with Preview title on left and version on right
+	// Header with session name (or Preview) on left and version on right
 	previewWidth := m.calculatePreviewWidth()
-	title := titleStyle.Render(" Preview ")
+
+	// Get selected instance for header
+	var headerInst *session.Instance
+	if len(m.groups) > 0 {
+		m.buildVisibleItems()
+		if m.cursor >= 0 && m.cursor < len(m.visibleItems) {
+			item := m.visibleItems[m.cursor]
+			if !item.isGroup {
+				headerInst = item.instance
+			}
+		}
+	} else if len(m.instances) > 0 && m.cursor < len(m.instances) {
+		headerInst = m.instances[m.cursor]
+	}
+
+	// Build tab bar (Preview / Diff) - separator between tabs, not before
+	// Use selectedStyle (no padding) for precise control
+	border := dimStyle.Render("│")
+	activeTab := selectedStyle.Bold(true)
+	var tabBar string
+	if m.showDiff {
+		tabBar = dimStyle.Render("  Preview  ") + border + activeTab.Render("  Diff  ")
+	} else {
+		tabBar = activeTab.Render("  Preview  ") + border + dimStyle.Render("  Diff  ")
+	}
+
+	var title string
+	if headerInst != nil {
+		title = tabBar + dimStyle.Render("│ ") + formatSessionNameLipgloss(headerInst.Name, headerInst.Color, headerInst.BgColor)
+	} else {
+		title = tabBar
+	}
 
 	// Add update indicator if available
 	versionText := fmt.Sprintf("%s v%s", AppName, AppVersion)
@@ -85,8 +116,8 @@ func (m Model) buildPreviewPane(contentHeight int) string {
 							statusIcon = stoppedStyle.Render("○")
 						}
 
-						// Session name with status
-						rightPane.WriteString(fmt.Sprintf("  %s %s", statusIcon, lipgloss.NewStyle().Bold(true).Render(s.Name)))
+						// Session name with status and color
+						rightPane.WriteString(fmt.Sprintf("  %s %s", statusIcon, formatSessionNameLipgloss(s.Name, s.Color, s.BgColor)))
 						rightPane.WriteString("\n")
 
 						// Path
@@ -156,6 +187,40 @@ func (m Model) buildPreviewPane(contentHeight int) string {
 
 	if inst == nil {
 		return rightPane.String()
+	}
+
+	// Diff mode - simplified header with only Path, Notes, and View mode
+	if m.showDiff {
+		// Path
+		rightPane.WriteString("  " + projectLabelStyle.Render("Path: ") + projectNameStyle.Render(inst.Path))
+		rightPane.WriteString("\n")
+
+		// Notes if any
+		if inst.Notes != "" {
+			notesPreview := inst.Notes
+			if idx := strings.Index(notesPreview, "\n"); idx != -1 {
+				notesPreview = notesPreview[:idx] + "…"
+			}
+			maxNotesLen := previewWidth - 12
+			if len([]rune(notesPreview)) > maxNotesLen {
+				notesPreview = truncateRunes(notesPreview, maxNotesLen)
+			}
+			notesStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorYellow)).Italic(true)
+			rightPane.WriteString("  " + projectLabelStyle.Render("Notes: ") + notesStyle.Render(notesPreview))
+			rightPane.WriteString("\n")
+		}
+
+		// View mode with hint
+		diffModeLabel := m.diffPane.GetModeLabel()
+		rightPane.WriteString("  " + projectLabelStyle.Render("View: ") + projectNameStyle.Render(diffModeLabel) + dimStyle.Render(" (F to switch)"))
+		rightPane.WriteString("\n")
+
+		// Horizontal separator
+		rightPane.WriteString(dimStyle.Render(strings.Repeat("─", previewWidth)))
+		rightPane.WriteString("\n")
+
+		headerLines := strings.Count(rightPane.String(), "\n") + 1
+		return m.buildDiffContent(rightPane.String(), contentHeight, headerLines, previewWidth)
 	}
 
 	// Get window list for tab display
@@ -238,9 +303,9 @@ func (m Model) buildPreviewPane(contentHeight int) string {
 			if fw.Index == activeWindow.Index {
 				agentType = fw.Agent
 				customCmd = fw.CustomCommand
-				autoYes = false // Followed windows don't have separate autoYes
-				resumeID = ""   // Followed windows don't have resume
-				notes = ""      // Notes are per session, not per tab
+				autoYes = fw.AutoYes
+				resumeID = fw.ResumeSessionID
+				notes = fw.Notes // Tab-specific notes
 				break
 			}
 		}
@@ -433,6 +498,24 @@ func (m Model) buildSplitPreviewPane(contentHeight int) string {
 	return result.String()
 }
 
+// buildDiffContent builds the diff view content
+func (m *Model) buildDiffContent(header string, contentHeight, headerLines, previewWidth int) string {
+	var result strings.Builder
+	result.WriteString(header)
+
+	// Set diff pane size (full width, viewport handles content)
+	diffHeight := contentHeight - headerLines
+	if diffHeight < MinPreviewLines {
+		diffHeight = MinPreviewLines
+	}
+	m.diffPane.SetSize(previewWidth, diffHeight)
+
+	// Get diff content from diff pane - viewport handles everything
+	result.WriteString(m.diffPane.View())
+
+	return result.String()
+}
+
 // buildMiniPreview builds a compact preview for split view
 func (m Model) buildMiniPreview(inst *session.Instance, height, width int, label string, focused bool, scrollOffset int) string {
 	var preview strings.Builder
@@ -448,19 +531,15 @@ func (m Model) buildMiniPreview(inst *session.Instance, height, width int, label
 		focusIndicator = titleStyle.Render("▶")
 	}
 
-	// Header with session name
-	nameStyle := titleStyle
-	if inst.Status == session.StatusRunning {
-		if m.isActive[inst.ID] {
-			nameStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(ColorOrange)).Bold(true)
-		} else {
-			nameStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(ColorLightGray)).Bold(true)
-		}
-	} else {
-		nameStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(ColorRed)).Bold(true)
-	}
+	// Header with session name using configured colors
 	preview.WriteString(focusIndicator + " ")
-	preview.WriteString(nameStyle.Render(inst.Name))
+	preview.WriteString(formatSessionNameLipgloss(inst.Name, inst.Color, inst.BgColor))
+	// Add status indicator after name
+	if inst.Status != session.StatusRunning {
+		preview.WriteString(stoppedStyle.Render(" ○"))
+	} else if m.isActive[inst.ID] {
+		preview.WriteString(activeStyle.Render(" ●"))
+	}
 	preview.WriteString("\n")
 
 	// Get preview content for this instance

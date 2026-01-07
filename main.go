@@ -28,11 +28,28 @@ func main() {
 			printHelp()
 			return
 		case "yolo":
-			if len(os.Args) < 3 {
-				fmt.Fprintf(os.Stderr, "Usage: %s yolo <tmux-session-name>\n", os.Args[0])
+			if len(os.Args) < 4 {
+				fmt.Fprintf(os.Stderr, "Usage: %s yolo <tmux-session-name> <window-index>\n", os.Args[0])
 				os.Exit(1)
 			}
-			if err := toggleYolo(os.Args[2]); err != nil {
+			if err := toggleYolo(os.Args[2], os.Args[3]); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "refresh-status":
+			if len(os.Args) < 3 {
+				os.Exit(1)
+			}
+			refreshStatusBar(os.Args[2])
+			return
+		case "yolo-confirm":
+			if len(os.Args) < 5 {
+				fmt.Fprintf(os.Stderr, "Usage: %s yolo-confirm <tmux-session> <window-index> <on|off>\n", os.Args[0])
+				os.Exit(1)
+			}
+			enable := os.Args[4] == "on"
+			if err := confirmYolo(os.Args[2], os.Args[3], enable); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
@@ -97,9 +114,58 @@ func runUpdate() error {
 	return nil
 }
 
-// toggleYolo toggles yolo mode for a session by tmux session name
+// refreshStatusBar updates the tmux status bar for a session
+// Called from tmux hook when window changes
+func refreshStatusBar(tmuxSessionName string) {
+	// Load storage
+	storage, err := session.NewStorage()
+	if err != nil {
+		return
+	}
+
+	// Search in all projects for the session
+	var inst *session.Instance
+
+	// First check default project
+	instances, _, _ := storage.LoadAll()
+	for _, i := range instances {
+		if i.TmuxSessionName() == tmuxSessionName {
+			inst = i
+			break
+		}
+	}
+
+	// If not found, search in other projects
+	if inst == nil {
+		projectsData, err := storage.LoadProjects()
+		if err == nil && projectsData != nil {
+			for _, project := range projectsData.Projects {
+				storage.SetActiveProject(project.ID)
+				projInstances, _, _ := storage.LoadAll()
+				for _, i := range projInstances {
+					if i.TmuxSessionName() == tmuxSessionName {
+						inst = i
+						break
+					}
+				}
+				if inst != nil {
+					break
+				}
+			}
+		}
+	}
+
+	if inst == nil {
+		return
+	}
+
+	// Update status bar with full instance for per-window YOLO support
+	ui.RefreshTmuxStatusBarFull(tmuxSessionName, inst.Name, inst.Color, inst.BgColor, inst)
+}
+
+// toggleYolo shows confirmation menu for toggling yolo mode on the active window
 // Called from tmux binding when user presses Ctrl+Y inside a session
-func toggleYolo(tmuxSessionName string) error {
+func toggleYolo(tmuxSessionName, windowIndex string) error {
 	// Load storage
 	storage, err := session.NewStorage()
 	if err != nil {
@@ -142,46 +208,178 @@ func toggleYolo(tmuxSessionName string) error {
 		return fmt.Errorf("session not found: %s", tmuxSessionName)
 	}
 
-	// Get agent type
-	agentType := inst.Agent
-	if agentType == "" {
-		agentType = session.AgentClaude
+	// Determine agent type for the active window
+	var agentType session.AgentType
+	var currentYolo bool
+
+	if windowIndex == "0" {
+		// Main window
+		agentType = inst.Agent
+		if agentType == "" {
+			agentType = session.AgentClaude
+		}
+		currentYolo = inst.AutoYes
+	} else {
+		// Check if it's a followed window
+		for _, fw := range inst.FollowedWindows {
+			if fmt.Sprintf("%d", fw.Index) == windowIndex {
+				agentType = fw.Agent
+				currentYolo = fw.AutoYes
+				break
+			}
+		}
+		if agentType == "" {
+			return fmt.Errorf("window %s is not a tracked agent", windowIndex)
+		}
 	}
 
-	// Special handling for Gemini - just send Ctrl+Y
+	// Special handling for Gemini - just send Ctrl+Y (Gemini has its own confirmation)
 	if agentType == session.AgentGemini {
 		return inst.SendKeys("C-y")
+	}
+
+	// Terminal windows don't support YOLO
+	if agentType == session.AgentTerminal {
+		exec.Command("tmux", "display-message", "-t", tmuxSessionName, "Terminal windows don't support YOLO mode").Run()
+		return nil
 	}
 
 	// Check if agent supports AutoYes
 	config := session.AgentConfigs[agentType]
 	if !config.SupportsAutoYes {
-		return fmt.Errorf("yolo mode not supported for %s", agentType)
+		exec.Command("tmux", "display-message", "-t", tmuxSessionName, fmt.Sprintf("YOLO mode not supported for %s", agentType)).Run()
+		return nil
 	}
 
-	// Toggle AutoYes
-	inst.AutoYes = !inst.AutoYes
+	// Build confirmation menu
+	var menuTitle, menuAction, newState string
+	if currentYolo {
+		menuTitle = "Disable YOLO mode?"
+		menuAction = "Disable YOLO"
+		newState = "off"
+	} else {
+		menuTitle = "Enable YOLO mode?"
+		menuAction = "Enable YOLO"
+		newState = "on"
+	}
+
+	// Show tmux menu for confirmation
+	confirmCmd := fmt.Sprintf("asmgr yolo-confirm %s %s %s", tmuxSessionName, windowIndex, newState)
+	exec.Command("tmux", "display-menu", "-t", tmuxSessionName,
+		"-T", fmt.Sprintf(" %s ", menuTitle),
+		fmt.Sprintf(" %s ", menuAction), "", fmt.Sprintf("run-shell '%s'", confirmCmd),
+		" Cancel ", "", "",
+	).Run()
+
+	return nil
+}
+
+// confirmYolo performs the actual YOLO toggle after user confirmation
+func confirmYolo(tmuxSessionName, windowIndex string, enableYolo bool) error {
+	// Load storage
+	storage, err := session.NewStorage()
+	if err != nil {
+		return fmt.Errorf("failed to load storage: %w", err)
+	}
+
+	// Search in all projects for the session
+	var inst *session.Instance
+
+	// First check default project
+	instances, _, _ := storage.LoadAll()
+	for _, i := range instances {
+		if i.TmuxSessionName() == tmuxSessionName {
+			inst = i
+			break
+		}
+	}
+
+	// If not found, search in other projects
+	if inst == nil {
+		projectsData, err := storage.LoadProjects()
+		if err == nil && projectsData != nil {
+			for _, project := range projectsData.Projects {
+				storage.SetActiveProject(project.ID)
+				instances, _, _ := storage.LoadAll()
+				for _, i := range instances {
+					if i.TmuxSessionName() == tmuxSessionName {
+						inst = i
+						break
+					}
+				}
+				if inst != nil {
+					break
+				}
+			}
+		}
+	}
+
+	if inst == nil {
+		return fmt.Errorf("session not found: %s", tmuxSessionName)
+	}
+
+	// Determine agent type and update YOLO state
+	var agentType session.AgentType
+	var isFollowedWindow bool
+	var followedWindowIdx int
+
+	if windowIndex == "0" {
+		agentType = inst.Agent
+		if agentType == "" {
+			agentType = session.AgentClaude
+		}
+		inst.AutoYes = enableYolo
+	} else {
+		for idx, fw := range inst.FollowedWindows {
+			if fmt.Sprintf("%d", fw.Index) == windowIndex {
+				agentType = fw.Agent
+				isFollowedWindow = true
+				followedWindowIdx = idx
+				inst.FollowedWindows[idx].AutoYes = enableYolo
+				break
+			}
+		}
+	}
+
+	// Save changes
 	if err := storage.UpdateInstance(inst); err != nil {
 		return fmt.Errorf("failed to save: %w", err)
 	}
 
+	// Get agent config
+	config := session.AgentConfigs[agentType]
+
 	// Build restart command
 	var args []string
 	args = append(args, config.Command)
-	if inst.AutoYes && config.AutoYesFlag != "" {
+	if enableYolo && config.AutoYesFlag != "" {
 		args = append(args, config.AutoYesFlag)
 	}
-	// Add --resume with session ID to continue the specific conversation
-	if config.SupportsResume && config.ResumeFlag != "" && inst.ResumeSessionID != "" {
-		args = append(args, config.ResumeFlag, inst.ResumeSessionID)
+
+	// Add resume flag if supported
+	if config.SupportsResume && config.ResumeFlag != "" {
+		if !isFollowedWindow && inst.ResumeSessionID != "" {
+			args = append(args, config.ResumeFlag, inst.ResumeSessionID)
+		} else if isFollowedWindow && inst.FollowedWindows[followedWindowIdx].ResumeSessionID != "" {
+			args = append(args, config.ResumeFlag, inst.FollowedWindows[followedWindowIdx].ResumeSessionID)
+		}
 	}
 
-	// Update tmux window name (YOLO indicator is shown in status bar separately)
-	exec.Command("tmux", "rename-window", "-t", tmuxSessionName, inst.Name).Run()
-
-	// Kill current process and respawn pane with new command
+	// Respawn the pane with new command
+	target := fmt.Sprintf("%s:%s", tmuxSessionName, windowIndex)
 	cmdStr := strings.Join(args, " ")
-	exec.Command("tmux", "respawn-pane", "-t", tmuxSessionName, "-k", cmdStr).Run()
+	exec.Command("tmux", "respawn-pane", "-t", target, "-k", cmdStr).Run()
+
+	// Refresh status bar
+	refreshStatusBar(tmuxSessionName)
+
+	// Show confirmation message
+	status := "OFF"
+	if enableYolo {
+		status = "ON"
+	}
+	exec.Command("tmux", "display-message", "-t", tmuxSessionName, fmt.Sprintf("YOLO mode %s for window %s", status, windowIndex)).Run()
 
 	return nil
 }
+

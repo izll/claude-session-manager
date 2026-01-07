@@ -120,14 +120,31 @@ type Instance struct {
 	CustomCommand   string    `json:"custom_command,omitempty"`    // Custom command for AgentCustom
 	Notes           string           `json:"notes,omitempty"`             // User notes/comments for this session
 	FollowedWindows []FollowedWindow `json:"followed_windows,omitempty"`  // Windows tracked as agents (window 0 is main agent)
+	BaseCommitSHA   string           `json:"base_commit_sha,omitempty"`   // Git HEAD commit at session start (for diff)
+}
+
+// DiffStats contains git diff statistics and content
+type DiffStats struct {
+	Added   int    // Number of added lines
+	Removed int    // Number of removed lines
+	Content string // Raw diff content
+	Error   error  // Error if diff failed
+}
+
+// IsEmpty returns true if there are no changes
+func (d *DiffStats) IsEmpty() bool {
+	return d == nil || (d.Added == 0 && d.Removed == 0 && d.Content == "")
 }
 
 // FollowedWindow represents a tmux window tracked as an agent
 type FollowedWindow struct {
-	Index         int       `json:"index"`
-	Agent         AgentType `json:"agent"`
-	Name          string    `json:"name"`           // Tab name for display
-	CustomCommand string    `json:"custom_command"` // For custom agents
+	Index           int       `json:"index"`
+	Agent           AgentType `json:"agent"`
+	Name            string    `json:"name"`              // Tab name for display
+	CustomCommand   string    `json:"custom_command"`    // For custom agents
+	AutoYes         bool      `json:"auto_yes"`          // YOLO mode for this tab
+	ResumeSessionID string    `json:"resume_session_id"` // Resume session ID for this tab
+	Notes           string    `json:"notes,omitempty"`   // User notes for this tab
 }
 
 // GetAgentConfig returns the agent configuration for this instance
@@ -140,6 +157,15 @@ func (i *Instance) GetAgentConfig() AgentConfig {
 		return config
 	}
 	return AgentConfigs[AgentClaude]
+}
+
+// WindowName returns the display name for the main tmux window (agent type)
+func (i *Instance) WindowName() string {
+	agent := i.Agent
+	if agent == "" {
+		agent = AgentClaude
+	}
+	return string(agent)
 }
 
 // expandTilde expands ~ to user's home directory
@@ -348,13 +374,13 @@ func (i *Instance) StartWithResume(resumeID string) error {
 		exec.Command("tmux", "bind-key", "-T", "copy-mode-vi", "S-PageUp", "send-keys", "-X", "page-up").Run()
 		exec.Command("tmux", "bind-key", "-T", "copy-mode-vi", "S-PageDown", "send-keys", "-X", "page-down").Run()
 
-		// Bind Ctrl+Y for yolo mode toggle (uses current session)
-		exec.Command("tmux", "bind-key", "-n", "C-y", "run-shell", `asmgr yolo "$(tmux display-message -p '#{session_name}')" 2>/dev/null`).Run()
+		// Bind Ctrl+Y for yolo mode toggle (passes both session name and window index)
+		exec.Command("tmux", "bind-key", "-n", "C-y", "run-shell", `asmgr yolo "$(tmux display-message -p '#{session_name}')" "$(tmux display-message -p '#{window_index}')" 2>/dev/null`).Run()
 
 		// Ctrl+q will be set up with resize in UpdateDetachBinding
 
-		// Set window name (YOLO indicator is shown in status bar separately)
-		exec.Command("tmux", "rename-window", "-t", sessionName, i.Name).Run()
+		// Set window 0 name to agent type (session name is shown in status bar)
+		exec.Command("tmux", "rename-window", "-t", sessionName+":0", i.WindowName()).Run()
 
 		// Check if session is still alive after a short delay (detect immediate exit)
 		time.Sleep(300 * time.Millisecond)
@@ -367,10 +393,31 @@ func (i *Instance) StartWithResume(resumeID string) error {
 	i.Status = StatusRunning
 	i.UpdatedAt = time.Now()
 
+	// Save git HEAD commit for diff tracking (if in a git repo)
+	i.saveBaseCommit()
+
 	// Restore followed windows (tabs) if any
 	i.restoreFollowedWindows()
 
 	return nil
+}
+
+// saveBaseCommit saves the current git HEAD commit SHA for diff tracking
+func (i *Instance) saveBaseCommit() {
+	// Only save if not already set (preserve original base on restart)
+	if i.BaseCommitSHA != "" {
+		return
+	}
+
+	// Check if path is a git repo and get HEAD commit
+	cmd := exec.Command("git", "-C", i.Path, "rev-parse", "HEAD")
+	output, err := cmd.Output()
+	if err != nil {
+		// Not a git repo or error - no diff available
+		return
+	}
+
+	i.BaseCommitSHA = strings.TrimSpace(string(output))
 }
 
 // restoreFollowedWindows recreates agent tabs after session restart
@@ -423,6 +470,8 @@ func (i *Instance) restoreFollowedWindows() {
 		// Set remain-on-exit so window stays open when command exits (shows as stopped)
 		target := fmt.Sprintf("%s:%d", sessionName, newIdx)
 		exec.Command("tmux", "set-option", "-t", target, "remain-on-exit", "on").Run()
+		// Disable automatic-rename so the window keeps the user-specified name
+		exec.Command("tmux", "set-option", "-t", target, "automatic-rename", "off").Run()
 
 		// Re-add to followed windows with updated index
 		i.FollowedWindows = append(i.FollowedWindows, FollowedWindow{
@@ -502,6 +551,8 @@ func (i *Instance) NewWindowWithName(name string) error {
 	// Set remain-on-exit so window stays open when command exits (shows as stopped)
 	target := fmt.Sprintf("%s:%d", sessionName, newIdx)
 	exec.Command("tmux", "set-option", "-t", target, "remain-on-exit", "on").Run()
+	// Disable automatic-rename so the window keeps the user-specified name
+	exec.Command("tmux", "set-option", "-t", target, "automatic-rename", "off").Run()
 
 	return nil
 }
@@ -546,6 +597,71 @@ func (i *Instance) RespawnWindow(windowIdx int) error {
 					args := []string{}
 					if i.AutoYes && config.SupportsAutoYes && config.AutoYesFlag != "" {
 						args = append(args, config.AutoYesFlag)
+					}
+					agentCmd = config.Command
+					if len(args) > 0 {
+						agentCmd = agentCmd + " " + strings.Join(args, " ")
+					}
+				}
+				break
+			}
+		}
+	}
+
+	// Respawn the pane with the command
+	if agentCmd != "" {
+		return exec.Command("tmux", "respawn-pane", "-k", "-t", target, agentCmd).Run()
+	}
+	// Empty command = default shell
+	return exec.Command("tmux", "respawn-pane", "-k", "-t", target).Run()
+}
+
+// RespawnWindowWithResume restarts a window's process with a specific resume session ID
+func (i *Instance) RespawnWindowWithResume(windowIdx int, resumeID string) error {
+	if i.Status != StatusRunning {
+		return fmt.Errorf("instance not running")
+	}
+
+	sessionName := i.TmuxSessionName()
+	target := fmt.Sprintf("%s:%d", sessionName, windowIdx)
+
+	// Get the agent type for this window to build the command
+	var agentCmd string
+	if windowIdx == 0 {
+		// Main window - use instance's agent
+		config := i.GetAgentConfig()
+		if i.Agent == AgentCustom {
+			agentCmd = i.CustomCommand
+		} else {
+			var args []string
+			if i.AutoYes && config.SupportsAutoYes && config.AutoYesFlag != "" {
+				args = append(args, config.AutoYesFlag)
+			}
+			if config.SupportsResume && config.ResumeFlag != "" && resumeID != "" {
+				args = append(args, config.ResumeFlag, resumeID)
+			}
+			agentCmd = config.Command
+			if len(args) > 0 {
+				agentCmd = agentCmd + " " + strings.Join(args, " ")
+			}
+		}
+	} else {
+		// Followed window - find the agent type
+		for _, fw := range i.FollowedWindows {
+			if fw.Index == windowIdx {
+				if fw.Agent == AgentTerminal {
+					// Terminal - just respawn shell
+					agentCmd = ""
+				} else if fw.Agent == AgentCustom {
+					agentCmd = fw.CustomCommand
+				} else {
+					config := AgentConfigs[fw.Agent]
+					var args []string
+					if fw.AutoYes && config.SupportsAutoYes && config.AutoYesFlag != "" {
+						args = append(args, config.AutoYesFlag)
+					}
+					if config.SupportsResume && config.ResumeFlag != "" && resumeID != "" {
+						args = append(args, config.ResumeFlag, resumeID)
 					}
 					agentCmd = config.Command
 					if len(args) > 0 {
@@ -863,6 +979,8 @@ func (i *Instance) NewAgentWindow(name string, agent AgentType, customCmd string
 	// Set remain-on-exit so window stays open when command exits (shows as stopped)
 	target := fmt.Sprintf("%s:%d", sessionName, newIdx)
 	exec.Command("tmux", "set-option", "-t", target, "remain-on-exit", "on").Run()
+	// Disable automatic-rename so the window keeps the user-specified name
+	exec.Command("tmux", "set-option", "-t", target, "automatic-rename", "off").Run()
 
 	return newIdx, nil
 }
@@ -1129,4 +1247,84 @@ func (i *Instance) UpdateStatus() {
 	} else {
 		i.Status = StatusStopped
 	}
+}
+
+// Git diff functions
+
+// GetSessionDiff returns diff since session start (BaseCommitSHA)
+func (i *Instance) GetSessionDiff() *DiffStats {
+	if i.BaseCommitSHA == "" {
+		return &DiffStats{Error: fmt.Errorf("no base commit (not a git repo or session started before tracking)")}
+	}
+	return i.getDiff(i.BaseCommitSHA)
+}
+
+// GetFullDiff returns all uncommitted changes (staged + unstaged)
+func (i *Instance) GetFullDiff() *DiffStats {
+	return i.getDiff("")
+}
+
+// getDiff executes git diff and parses the result
+func (i *Instance) getDiff(baseRef string) *DiffStats {
+	stats := &DiffStats{}
+
+	if !i.isGitRepo() {
+		stats.Error = fmt.Errorf("not a git repository")
+		return stats
+	}
+
+	// Stage untracked files with intent-to-add for diff visibility
+	i.stageUntrackedFiles()
+
+	// Build git diff command
+	args := []string{"-C", i.Path, "--no-pager", "diff"}
+	if baseRef != "" {
+		args = append(args, baseRef)
+	}
+
+	cmd := exec.Command("git", args...)
+	output, err := cmd.Output()
+	if err != nil {
+		stats.Error = fmt.Errorf("git diff failed: %w", err)
+		return stats
+	}
+
+	stats.Content = string(output)
+	stats.Added, stats.Removed = i.countDiffLines(stats.Content)
+
+	return stats
+}
+
+// isGitRepo checks if the instance path is a git repository
+func (i *Instance) isGitRepo() bool {
+	cmd := exec.Command("git", "-C", i.Path, "rev-parse", "--git-dir")
+	return cmd.Run() == nil
+}
+
+// stageUntrackedFiles adds untracked files with --intent-to-add for diff visibility
+func (i *Instance) stageUntrackedFiles() {
+	exec.Command("git", "-C", i.Path, "add", "-N", ".").Run()
+}
+
+// countDiffLines counts added and removed lines in diff content
+func (i *Instance) countDiffLines(content string) (added, removed int) {
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		if len(line) == 0 {
+			continue
+		}
+		switch {
+		case line[0] == '+' && !strings.HasPrefix(line, "+++"):
+			added++
+		case line[0] == '-' && !strings.HasPrefix(line, "---"):
+			removed++
+		}
+	}
+	return
+}
+
+// ResetBaseCommit clears the base commit SHA (useful for "reset diff" feature)
+func (i *Instance) ResetBaseCommit() {
+	i.BaseCommitSHA = ""
+	i.saveBaseCommit()
 }
