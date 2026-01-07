@@ -95,8 +95,8 @@ Install options:
 **Debian/Ubuntu (.deb):**
 ```bash
 # Download from releases
-wget https://github.com/izll/agent-session-manager/releases/download/v0.6.5/asmgr_0.6.5_linux_amd64.deb
-sudo dpkg -i asmgr_0.6.5_linux_amd64.deb
+wget https://github.com/izll/agent-session-manager/releases/download/v0.6.5/asmgr_0.6.5_linux_x86_64.deb
+sudo dpkg -i asmgr_0.6.5_linux_x86_64.deb
 ```
 
 **RedHat/Fedora/Rocky (.rpm):**
