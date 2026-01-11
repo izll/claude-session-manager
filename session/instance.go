@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -39,6 +40,7 @@ const (
 	AgentCodex    AgentType = "codex"
 	AgentAmazonQ  AgentType = "amazonq"
 	AgentOpenCode AgentType = "opencode"
+	AgentCursor   AgentType = "cursor"
 	AgentCustom   AgentType = "custom"
 	AgentTerminal AgentType = "terminal" // Plain shell/terminal window
 )
@@ -96,6 +98,11 @@ var AgentConfigs = map[AgentType]AgentConfig{
 		SupportsAutoYes: false,
 		ResumeFlag:      "--session",
 	},
+	AgentCursor: {
+		Command:         "cursor",
+		SupportsResume:  false,
+		SupportsAutoYes: false,
+	},
 	AgentCustom: {
 		Command:         "",
 		SupportsResume:  false,
@@ -121,6 +128,7 @@ type Instance struct {
 	Notes           string           `json:"notes,omitempty"`             // User notes/comments for this session
 	FollowedWindows []FollowedWindow `json:"followed_windows,omitempty"`  // Windows tracked as agents (window 0 is main agent)
 	BaseCommitSHA   string           `json:"base_commit_sha,omitempty"`   // Git HEAD commit at session start (for diff)
+	Favorite        bool             `json:"favorite,omitempty"`          // Whether session is marked as favorite
 }
 
 // DiffStats contains git diff statistics and content
@@ -258,6 +266,10 @@ func (i *Instance) Start() error {
 }
 
 func (i *Instance) StartWithResume(resumeID string) error {
+	// Update status based on actual tmux session state
+	// This handles cases where session was killed externally
+	i.UpdateStatus()
+
 	if i.Status == StatusRunning {
 		return fmt.Errorf("instance already running")
 	}
@@ -983,6 +995,92 @@ func (i *Instance) NewAgentWindow(name string, agent AgentType, customCmd string
 	exec.Command("tmux", "set-option", "-t", target, "automatic-rename", "off").Run()
 
 	return newIdx, nil
+}
+
+// ForkSession creates a fork of the current Claude session using --fork-session
+// Returns the new session ID
+func (i *Instance) ForkSession() (string, error) {
+	if i.Agent != AgentClaude {
+		return "", fmt.Errorf("fork is only supported for Claude sessions")
+	}
+
+	// Get current session ID
+	sessionID := i.ResumeSessionID
+	if sessionID == "" {
+		return "", fmt.Errorf("no session ID to fork - session may not have started yet")
+	}
+
+	// Run claude with --fork-session to get new session ID
+	// This doesn't actually run the agent, just creates the fork and returns the ID
+	cmd := exec.Command("claude", "--resume", sessionID, "--fork-session", "--output-format", "json", "-p", ".")
+	cmd.Dir = i.Path
+
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to fork session: %w", err)
+	}
+
+	// Parse JSON output to get new session ID
+	var result struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(output, &result); err != nil {
+		return "", fmt.Errorf("failed to parse fork output: %w", err)
+	}
+
+	if result.SessionID == "" {
+		return "", fmt.Errorf("fork returned empty session ID")
+	}
+
+	return result.SessionID, nil
+}
+
+// NewForkedTab creates a new tab with a forked Claude session
+func (i *Instance) NewForkedTab(name string, sessionID string) error {
+	if i.Status != StatusRunning {
+		return fmt.Errorf("instance not running")
+	}
+
+	sessionName := i.TmuxSessionName()
+
+	// Build claude command with resume
+	config := AgentConfigs[AgentClaude]
+	args := []string{}
+
+	// Add auto-yes flag if the main session has it enabled
+	if i.AutoYes && config.AutoYesFlag != "" {
+		args = append(args, config.AutoYesFlag)
+	}
+
+	// Add resume flag with forked session ID
+	args = append(args, config.ResumeFlag, sessionID)
+
+	agentCmd := config.Command + " " + strings.Join(args, " ")
+
+	// Create new window with forked agent
+	cmd := exec.Command("tmux", "new-window", "-t", sessionName, "-c", i.Path, "-n", name, agentCmd)
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	// Get the new window index
+	newIdx := i.GetCurrentWindowIndex()
+
+	// Add to followed windows with fork info
+	i.FollowedWindows = append(i.FollowedWindows, FollowedWindow{
+		Index:           newIdx,
+		Agent:           AgentClaude,
+		Name:            name,
+		ResumeSessionID: sessionID,
+		Notes:           "Forked session",
+	})
+
+	// Set remain-on-exit so window stays open when command exits
+	target := fmt.Sprintf("%s:%d", sessionName, newIdx)
+	exec.Command("tmux", "set-option", "-t", target, "remain-on-exit", "on").Run()
+	exec.Command("tmux", "set-option", "-t", target, "automatic-rename", "off").Run()
+
+	return nil
 }
 
 func (i *Instance) IsAlive() bool {

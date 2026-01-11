@@ -276,7 +276,12 @@ func (m *Model) handleStartSession() {
 	if inst == nil {
 		return
 	}
+	// Update status based on actual tmux session state
+	inst.UpdateStatus()
+	m.storage.UpdateInstance(inst)
+
 	if inst.Status != session.StatusRunning {
+		// Session is stopped - start it
 		// Check if command exists before starting
 		if err := session.CheckAgentCommand(inst); err != nil {
 			m.err = err
@@ -290,6 +295,26 @@ func (m *Model) handleStartSession() {
 			m.state = stateError
 		} else {
 			m.storage.UpdateInstance(inst)
+		}
+	} else {
+		// Session is running - check if window 0 (main agent) is dead
+		windows := inst.GetWindowList()
+		for _, w := range windows {
+			if w.Index == 0 && w.Dead {
+				// Window 0 is dead - respawn it with resume ID if available
+				var err error
+				if inst.ResumeSessionID != "" {
+					err = inst.RespawnWindowWithResume(0, inst.ResumeSessionID)
+				} else {
+					err = inst.RespawnWindow(0)
+				}
+				if err != nil {
+					m.err = err
+					m.previousState = stateList
+					m.state = stateError
+				}
+				return
+			}
 		}
 	}
 }

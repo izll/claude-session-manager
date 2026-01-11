@@ -206,6 +206,8 @@ func (m *Model) buildSessionListHeader(listWidth int) string {
 
 	counts := m.countSessionStatuses()
 	header := titleStyle.Render(" Sessions ")
+
+	// Show search indicator if active
 	if len(m.instances) > 0 {
 		countsStr := fmt.Sprintf(" %s %d %s %d %s %d %s %d",
 			activeStyle.Render("●"), counts.active,

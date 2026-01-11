@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -768,6 +769,7 @@ var agentTypes = []session.AgentType{
 	session.AgentCodex,
 	session.AgentAmazonQ,
 	session.AgentOpenCode,
+	session.AgentCursor,
 	session.AgentCustom,
 }
 
@@ -1222,4 +1224,947 @@ func (m Model) handleConfirmYoloKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.state = stateList
 	}
 	return m, nil
+}
+
+// handleSearchKeys handles keyboard input in the search mode
+func (m Model) handleSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		// Cancel search and clear filter
+		m.searchQuery = ""
+		m.searchActive = false
+		m.state = stateList
+		return m, nil
+
+	case "enter", "down", "up":
+		// Accept search and navigate
+		query := strings.TrimSpace(m.searchInput.Value())
+		if query != "" {
+			m.searchQuery = strings.ToLower(query)
+			m.searchActive = true
+			m.cursor = 0
+		} else {
+			m.searchQuery = ""
+			m.searchActive = false
+		}
+		m.state = stateList
+		return m, nil
+	}
+
+	// Update input - pass as tea.Msg to ensure proper handling
+	var cmd tea.Cmd
+	m.searchInput, cmd = m.searchInput.Update(msg)
+	m.searchInput.Focus() // Ensure input stays focused
+
+	// Live filter as user types
+	query := strings.TrimSpace(m.searchInput.Value())
+	if query != "" {
+		m.searchQuery = strings.ToLower(query)
+		m.searchActive = true
+	} else {
+		m.searchQuery = ""
+		m.searchActive = false
+	}
+
+	return m, cmd
+}
+
+// handleGlobalSearchKeys handles keyboard input in the global search mode
+func (m Model) handleGlobalSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		// Close global search
+		m.globalSearchResults = nil
+		m.globalSearchCursor = 0
+		m.globalSearchExpanded = -1
+		m.globalSearchConversation = nil
+		m.globalSearchScroll = 0
+		m.globalSearchDebounceActive = false
+		m.globalSearchConvLoading = false
+		m.state = stateList
+		return m, nil
+
+	case "ctrl+r":
+		// Reload history index
+		m.globalSearchResults = nil
+		m.globalSearchCursor = 0
+		m.globalSearchConversation = nil
+		m.globalSearchScroll = 0
+		m.state = stateGlobalSearchLoading
+		// Force reload by resetting the index
+		m.historyIndex = session.NewHistoryIndex()
+		return m, m.loadHistoryCmd()
+
+	case "up":
+		// Navigate up in results
+		if m.globalSearchCursor > 0 {
+			m.globalSearchCursor--
+			m.globalSearchExpanded = -1
+			return m, m.loadConversationAsync()
+		}
+		return m, nil
+
+	case "down":
+		// Navigate down in results
+		if m.globalSearchCursor < len(m.globalSearchResults)-1 {
+			m.globalSearchCursor++
+			m.globalSearchExpanded = -1
+			return m, m.loadConversationAsync()
+		}
+		return m, nil
+
+	case "[", "alt+up":
+		// Scroll preview up (3 lines)
+		if m.globalSearchScroll > 0 {
+			m.globalSearchScroll -= 3
+			if m.globalSearchScroll < 0 {
+				m.globalSearchScroll = 0
+			}
+		}
+		return m, nil
+
+	case "]", "alt+down":
+		// Scroll preview down (3 lines)
+		m.globalSearchScroll += 3
+		return m, nil
+
+	case "pgup", "alt+pgup":
+		// Scroll preview up half page
+		if m.globalSearchScroll > 0 {
+			m.globalSearchScroll -= 15
+			if m.globalSearchScroll < 0 {
+				m.globalSearchScroll = 0
+			}
+		}
+		return m, nil
+
+	case "pgdown", "alt+pgdown":
+		// Scroll preview down half page
+		m.globalSearchScroll += 15
+		return m, nil
+
+	case "enter":
+		// Handle selected result - jump directly if match exists
+		if len(m.globalSearchResults) > 0 && m.globalSearchCursor < len(m.globalSearchResults) {
+			if m.globalSearchMatchedSession != nil {
+				// Match found - jump directly to session
+				inst := m.globalSearchMatchedSession
+				tabIndex := m.globalSearchMatchedTabIndex
+
+				// Find session index in list
+				if len(m.groups) > 0 {
+					// Grouped mode: search in visibleItems
+					m.buildVisibleItems()
+					for idx, item := range m.visibleItems {
+						if !item.isGroup && item.instance != nil && item.instance.ID == inst.ID {
+							m.cursor = idx
+							break
+						}
+					}
+				} else {
+					// Non-grouped mode: search in instances
+					for i, s := range m.instances {
+						if s.ID == inst.ID {
+							m.cursor = i
+							break
+						}
+					}
+				}
+
+				// Switch to matched tab if needed
+				if tabIndex >= 0 && tabIndex < len(inst.FollowedWindows) && inst.Status == session.StatusRunning {
+					windowIndex := inst.FollowedWindows[tabIndex].Index
+					inst.SelectWindow(windowIndex)
+				}
+
+				// Close global search and return to list
+				m.globalSearchResults = nil
+				m.globalSearchCursor = 0
+				m.globalSearchExpanded = -1
+				m.globalSearchConversation = nil
+				m.globalSearchScroll = 0
+				m.globalSearchMatchedSession = nil
+				m.globalSearchMatchedTabIndex = -1
+				m.state = stateList
+				return m, nil
+			}
+
+			// No matching session found - show action dialog
+			entry := m.globalSearchResults[m.globalSearchCursor]
+			m.globalSearchSelectedEntry = &entry
+			m.globalSearchActionCursor = 0
+			m.state = stateGlobalSearchAction
+		}
+		return m, nil
+
+	case "home":
+		// Jump to first result
+		m.globalSearchCursor = 0
+		m.globalSearchExpanded = -1
+		return m, m.loadConversationAsync()
+
+	case "end":
+		// Jump to last result
+		if len(m.globalSearchResults) > 0 {
+			m.globalSearchCursor = len(m.globalSearchResults) - 1
+		}
+		m.globalSearchExpanded = -1
+		return m, m.loadConversationAsync()
+	}
+
+	// Update input field
+	var cmd tea.Cmd
+	m.globalSearchInput, cmd = m.globalSearchInput.Update(msg)
+	m.globalSearchInput.Focus() // Ensure input stays focused
+
+	// Check if query changed - use debounce
+	query := strings.TrimSpace(m.globalSearchInput.Value())
+	if query != m.globalSearchPendingQuery {
+		m.globalSearchPendingQuery = query
+		// Start debounce timer (200ms delay)
+		if !m.globalSearchDebounceActive {
+			m.globalSearchDebounceActive = true
+			debounceCmd := tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg {
+				return globalSearchDebounceMsg{}
+			})
+			return m, tea.Batch(cmd, debounceCmd)
+		}
+	}
+
+	return m, cmd
+}
+
+// findBestMatchForEntry finds the best matching session/tab for a history entry
+// Returns the matched session and tab index (-1 for main session, >=0 for tab)
+func (m *Model) findBestMatchForEntry(entry session.HistoryEntry) (*session.Instance, int) {
+	// Special handling for Terminal entries - find terminal tabs directly
+	if entry.Agent == session.AgentTerminal {
+		for _, inst := range m.instances {
+			if (entry.SessionID != "" && inst.ResumeSessionID == entry.SessionID) ||
+				(entry.Path != "" && inst.Path == entry.Path) {
+				for i, tab := range inst.FollowedWindows {
+					if tab.Agent == session.AgentTerminal {
+						return inst, i
+					}
+				}
+			}
+		}
+		return nil, -1
+	}
+
+	// Priority 1: Match by SessionID (most specific)
+	if entry.SessionID != "" {
+		for _, inst := range m.instances {
+			if inst.ResumeSessionID == entry.SessionID && inst.Agent == entry.Agent {
+				return inst, -1
+			}
+			for i, tab := range inst.FollowedWindows {
+				if tab.ResumeSessionID == entry.SessionID && tab.Agent == entry.Agent {
+					return inst, i
+				}
+			}
+		}
+	}
+
+	// Priority 2: Match by path + agent (good specificity)
+	if entry.Path != "" {
+		for _, inst := range m.instances {
+			if inst.Path == entry.Path && inst.Agent == entry.Agent {
+				return inst, -1
+			}
+			for i, tab := range inst.FollowedWindows {
+				if inst.Path == entry.Path && tab.Agent == entry.Agent {
+					return inst, i
+				}
+			}
+		}
+	}
+
+	return nil, -1
+}
+
+// loadConversationAsync starts async loading of conversation for current cursor
+func (m *Model) loadConversationAsync() tea.Cmd {
+	if len(m.globalSearchResults) == 0 || m.globalSearchCursor >= len(m.globalSearchResults) {
+		m.globalSearchMatchedSession = nil
+		m.globalSearchMatchedTabIndex = -1
+		return nil
+	}
+
+	entry := m.globalSearchResults[m.globalSearchCursor]
+
+	// Find matching session for this entry
+	m.globalSearchMatchedSession, m.globalSearchMatchedTabIndex = m.findBestMatchForEntry(entry)
+
+	if entry.SessionFile == "" {
+		m.globalSearchConversation = nil
+		m.globalSearchConvLoading = false
+		m.globalSearchScroll = 0
+		return nil
+	}
+
+	// Mark as loading
+	m.globalSearchConvLoading = true
+	m.globalSearchConversation = nil
+	m.globalSearchScroll = 0
+	cursorPos := m.globalSearchCursor
+
+	// Load in background
+	return func() tea.Msg {
+		conv, _ := entry.LoadConversation()
+		return globalSearchConvLoadedMsg{
+			conversation: conv,
+			cursorPos:    cursorPos,
+		}
+	}
+}
+
+// handleGlobalSearchDebounce handles the debounce timer firing
+func (m Model) handleGlobalSearchDebounce() (tea.Model, tea.Cmd) {
+	m.globalSearchDebounceActive = false
+
+	// Check if we're still in global search state
+	if m.state != stateGlobalSearch {
+		return m, nil
+	}
+
+	// Perform the search with the pending query
+	query := m.globalSearchPendingQuery
+	if query != m.globalSearchLastQuery {
+		m.globalSearchLastQuery = query
+		m.globalSearchResults = m.historyIndex.Search(query)
+		m.globalSearchCursor = 0
+		m.globalSearchExpanded = -1
+		m.globalSearchConversation = nil
+		m.globalSearchScroll = 0
+
+		// Load conversation for first result
+		return m, m.loadConversationAsync()
+	}
+
+	return m, nil
+}
+
+// handleGlobalSearchConvLoaded handles when conversation finishes loading
+func (m Model) handleGlobalSearchConvLoaded(msg globalSearchConvLoadedMsg) (tea.Model, tea.Cmd) {
+	// Only apply if cursor hasn't moved
+	if m.globalSearchCursor == msg.cursorPos {
+		m.globalSearchConversation = msg.conversation
+		m.globalSearchConvLoading = false
+
+		// Auto-scroll to first match in conversation
+		query := strings.TrimSpace(m.globalSearchInput.Value())
+		if query != "" && len(msg.conversation) > 0 {
+			m.globalSearchScroll = m.findFirstMatchLine(msg.conversation, query)
+		}
+	}
+	return m, nil
+}
+
+// findFirstMatchLine finds the line number of the first match in conversation
+// This must match how formatConversationLines counts lines (with text wrapping)
+func (m Model) findFirstMatchLine(messages []session.ConversationMessage, query string) int {
+	lowerQuery := strings.ToLower(query)
+	lineNum := 0
+
+	// Use actual preview width (same calculation as in view)
+	// Preview width = total width - list pane width - borders
+	previewWidth := m.width - ListPaneWidth - 4
+	if previewWidth < 40 {
+		previewWidth = 40
+	}
+	// formatConversationLines uses width-2 for content, minus 4 for indent
+	wrapWidth := previewWidth - 6
+
+	for _, msg := range messages {
+		// Role header line (👤 User or 🤖 Assistant)
+		lineNum++
+
+		// Message content - need to account for text wrapping like formatConversationLines does
+		content := msg.Content
+		// Replace tabs like wrapText does
+		content = strings.ReplaceAll(content, "\t", "  ")
+		paragraphs := strings.Split(content, "\n")
+
+		for _, para := range paragraphs {
+			para = strings.TrimSpace(para)
+			if para == "" {
+				lineNum++
+				continue
+			}
+
+			// Check if this paragraph contains the match
+			if strings.Contains(strings.ToLower(para), lowerQuery) {
+				// Found match - scroll with offset for context
+				result := lineNum - 7
+				if result < 0 {
+					result = 0
+				}
+				return result
+			}
+
+			// Count wrapped lines (approximate)
+			words := strings.Fields(para)
+			currentLineLen := 0
+			wrappedLines := 1
+			for _, word := range words {
+				if currentLineLen+len(word)+1 > wrapWidth && currentLineLen > 0 {
+					wrappedLines++
+					currentLineLen = len(word)
+				} else {
+					if currentLineLen > 0 {
+						currentLineLen++
+					}
+					currentLineLen += len(word)
+				}
+			}
+			lineNum += wrappedLines
+		}
+
+		// Empty line between messages
+		lineNum++
+	}
+
+	return 0
+}
+
+// handleGlobalSearchConfirmJumpKeys handles keyboard input in the confirm jump dialog
+func (m Model) handleGlobalSearchConfirmJumpKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		// Go back to global search
+		m.globalSearchMatchedSession = nil
+		m.globalSearchSelectedEntry = nil
+		m.state = stateGlobalSearch
+		return m, nil
+
+	case "enter":
+		// Jump to the matched session
+		if m.globalSearchMatchedSession == nil {
+			m.state = stateGlobalSearch
+			return m, nil
+		}
+
+		inst := m.globalSearchMatchedSession
+		tabIndex := m.globalSearchMatchedTabIndex
+
+		// Clear global search state
+		m.globalSearchResults = nil
+		m.globalSearchCursor = 0
+		m.globalSearchExpanded = -1
+		m.globalSearchConversation = nil
+		m.globalSearchScroll = 0
+		m.globalSearchDebounceActive = false
+		m.globalSearchConvLoading = false
+		m.globalSearchSelectedEntry = nil
+		m.globalSearchMatchedSession = nil
+		m.globalSearchMatchedTabIndex = -1
+		m.state = stateList
+
+		// Update cursor to point to this session
+		if len(m.groups) > 0 {
+			m.buildVisibleItems()
+			for idx, item := range m.visibleItems {
+				if !item.isGroup && item.instance != nil && item.instance.ID == inst.ID {
+					m.cursor = idx
+					break
+				}
+			}
+		} else {
+			for i, existingInst := range m.instances {
+				if existingInst.ID == inst.ID {
+					m.cursor = i
+					break
+				}
+			}
+		}
+
+		// Switch to matched tab if needed
+		if tabIndex >= 0 && tabIndex < len(inst.FollowedWindows) && inst.Status == session.StatusRunning {
+			// Get actual tmux window index from FollowedWindows
+			windowIndex := inst.FollowedWindows[tabIndex].Index
+			inst.SelectWindow(windowIndex)
+		}
+
+		return m, nil
+	}
+
+	return m, nil
+}
+
+// handleGlobalSearchSelectMatchKeys handles keyboard input in the match selection dialog
+func (m Model) handleGlobalSearchSelectMatchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	maxCursor := len(m.globalSearchMatches) - 1
+	if maxCursor < 0 {
+		maxCursor = 0
+	}
+
+	switch msg.String() {
+	case "esc":
+		// Go back to global search
+		m.globalSearchMatches = nil
+		m.globalSearchMatchCursor = 0
+		m.globalSearchSelectedEntry = nil
+		m.state = stateGlobalSearch
+		return m, nil
+
+	case "up", "k":
+		if m.globalSearchMatchCursor > 0 {
+			m.globalSearchMatchCursor--
+		}
+		return m, nil
+
+	case "down", "j":
+		if m.globalSearchMatchCursor < maxCursor {
+			m.globalSearchMatchCursor++
+		}
+		return m, nil
+
+	case "enter":
+		if len(m.globalSearchMatches) == 0 {
+			m.state = stateGlobalSearch
+			return m, nil
+		}
+
+		selected := m.globalSearchMatches[m.globalSearchMatchCursor]
+		inst := selected.Session
+		tabIndex := selected.TabIndex
+
+		// Clear global search state
+		m.globalSearchResults = nil
+		m.globalSearchCursor = 0
+		m.globalSearchExpanded = -1
+		m.globalSearchConversation = nil
+		m.globalSearchScroll = 0
+		m.globalSearchDebounceActive = false
+		m.globalSearchConvLoading = false
+		m.globalSearchSelectedEntry = nil
+		m.globalSearchMatches = nil
+		m.globalSearchMatchCursor = 0
+		m.state = stateList
+
+		// Update cursor to point to this session
+		if len(m.groups) > 0 {
+			m.buildVisibleItems()
+			for idx, item := range m.visibleItems {
+				if !item.isGroup && item.instance != nil && item.instance.ID == inst.ID {
+					m.cursor = idx
+					break
+				}
+			}
+		} else {
+			for i, existingInst := range m.instances {
+				if existingInst.ID == inst.ID {
+					m.cursor = i
+					break
+				}
+			}
+		}
+
+		// Switch to matched tab if needed
+		if tabIndex >= 0 && tabIndex < len(inst.FollowedWindows) && inst.Status == session.StatusRunning {
+			// Get actual tmux window index from FollowedWindows
+			windowIndex := inst.FollowedWindows[tabIndex].Index
+			inst.SelectWindow(windowIndex)
+		}
+
+		return m, nil
+	}
+
+	return m, nil
+}
+
+// handleGlobalSearchNewNameKeys handles keyboard input in the new session name dialog
+func (m Model) handleGlobalSearchNewNameKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		// Go back to action selection
+		m.state = stateGlobalSearchAction
+		return m, nil
+
+	case "enter":
+		// Create session with entered name
+		name := strings.TrimSpace(m.nameInput.Value())
+		if name == "" {
+			return m, nil
+		}
+
+		if m.globalSearchSelectedEntry == nil {
+			m.state = stateList
+			return m, nil
+		}
+
+		return m.createSessionFromSearchEntry(m.globalSearchSelectedEntry, "", name)
+	}
+
+	// Handle text input
+	var cmd tea.Cmd
+	m.nameInput, cmd = m.nameInput.Update(msg)
+	return m, cmd
+}
+
+// handleGlobalSearchActionKeys handles keyboard input in the global search action dialog
+func (m Model) handleGlobalSearchActionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	maxCursor := 2 // 0=new session, 1=to group, 2=as tab
+
+	switch msg.String() {
+	case "esc":
+		// Go back to global search
+		m.globalSearchSelectedEntry = nil
+		m.state = stateGlobalSearch
+		return m, nil
+
+	case "up", "k":
+		if m.globalSearchActionCursor > 0 {
+			m.globalSearchActionCursor--
+		}
+		return m, nil
+
+	case "down", "j":
+		if m.globalSearchActionCursor < maxCursor {
+			m.globalSearchActionCursor++
+		}
+		return m, nil
+
+	case "1":
+		m.globalSearchActionCursor = 0
+		return m, nil
+
+	case "2":
+		m.globalSearchActionCursor = 1
+		return m, nil
+
+	case "3":
+		m.globalSearchActionCursor = 2
+		return m, nil
+
+	case "enter":
+		if m.globalSearchSelectedEntry == nil {
+			m.state = stateList
+			return m, nil
+		}
+
+		entry := m.globalSearchSelectedEntry
+
+		switch m.globalSearchActionCursor {
+		case 0:
+			// New session - ask for name first
+			m.nameInput.Reset()
+			// Pre-fill with snippet
+			suggestedName := entry.Snippet
+			if len(suggestedName) > 30 {
+				suggestedName = suggestedName[:30]
+			}
+			suggestedName = strings.ReplaceAll(suggestedName, "\n", " ")
+			suggestedName = strings.ReplaceAll(suggestedName, "\t", " ")
+			m.nameInput.SetValue(suggestedName)
+			m.nameInput.CursorEnd()
+			m.nameInput.Focus()
+			m.state = stateGlobalSearchNewName
+			return m, nil
+
+		case 1:
+			// Add to group - transition to group selector
+			m.groupCursor = 0
+			if len(m.groups) == 0 {
+				// No groups exist - create as ungrouped
+				return m.createSessionFromSearchEntry(entry, "", "")
+			}
+			m.state = stateSelectGroup
+			// Store that we're coming from global search
+			m.pendingGroupID = "__from_global_search__"
+			return m, nil
+
+		case 2:
+			// Add as new tab - need to select session
+			if len(m.instances) == 0 {
+				// No sessions exist - create new session instead
+				return m.createSessionFromSearchEntry(entry, "", "")
+			}
+			// Use session cursor for selection, transition to a custom selector
+			m.sessionCursor = 0
+			return m.addSearchEntryAsTab(entry)
+		}
+	}
+
+	return m, nil
+}
+
+// createSessionFromSearchEntry creates a new session from a global search entry
+func (m *Model) createSessionFromSearchEntry(entry *session.HistoryEntry, groupID string, customName string) (Model, tea.Cmd) {
+	// Only Claude entries can be resumed
+	if entry.Agent != session.AgentClaude || entry.SessionID == "" {
+		m.err = fmt.Errorf("only Claude sessions can be opened")
+		m.previousState = stateGlobalSearchAction
+		m.state = stateError
+		return *m, nil
+	}
+
+	// Determine path from entry or use current working dir
+	path := entry.Path
+	if path == "" {
+		var err error
+		path, err = os.Getwd()
+		if err != nil {
+			path = "."
+		}
+	}
+
+	// Use custom name if provided, otherwise generate from snippet
+	name := customName
+	if name == "" {
+		name = "claude"
+		if entry.Snippet != "" {
+			name = entry.Snippet
+			if len(name) > 30 {
+				name = name[:30] + "..."
+			}
+			// Clean up name
+			name = strings.ReplaceAll(name, "\n", " ")
+			name = strings.ReplaceAll(name, "\t", " ")
+		}
+	}
+
+	// Create new instance
+	inst, err := session.NewInstance(name, path, false, session.AgentClaude)
+	if err != nil {
+		m.err = err
+		m.previousState = stateGlobalSearchAction
+		m.state = stateError
+		return *m, nil
+	}
+
+	// Set resume session ID
+	inst.ResumeSessionID = entry.SessionID
+
+	// Assign to group if specified
+	if groupID != "" && groupID != "__from_global_search__" {
+		inst.GroupID = groupID
+	}
+
+	// Add to storage
+	if err := m.storage.AddInstance(inst); err != nil {
+		m.err = err
+		m.previousState = stateGlobalSearchAction
+		m.state = stateError
+		return *m, nil
+	}
+
+	// Start the session with resume
+	if err := inst.StartWithResume(entry.SessionID); err != nil {
+		m.err = err
+		m.previousState = stateGlobalSearchAction
+		m.state = stateError
+		return *m, nil
+	}
+	m.storage.UpdateInstance(inst)
+
+	m.instances = append(m.instances, inst)
+
+	// Clear global search state
+	m.globalSearchResults = nil
+	m.globalSearchCursor = 0
+	m.globalSearchExpanded = -1
+	m.globalSearchConversation = nil
+	m.globalSearchScroll = 0
+	m.globalSearchSelectedEntry = nil
+
+	// Move cursor to new session
+	if len(m.groups) > 0 {
+		m.buildVisibleItems()
+		for i, item := range m.visibleItems {
+			if !item.isGroup && item.instance != nil && item.instance.ID == inst.ID {
+				m.cursor = i
+				break
+			}
+		}
+	} else {
+		m.cursor = len(m.instances) - 1
+	}
+
+	m.state = stateList
+	return *m, nil
+}
+
+// addSearchEntryAsTab adds a global search entry as a new tab to the currently selected session
+func (m *Model) addSearchEntryAsTab(entry *session.HistoryEntry) (Model, tea.Cmd) {
+	// Only Claude entries can be resumed
+	if entry.Agent != session.AgentClaude || entry.SessionID == "" {
+		m.err = fmt.Errorf("only Claude sessions can be opened as tabs")
+		m.previousState = stateGlobalSearchAction
+		m.state = stateError
+		return *m, nil
+	}
+
+	// Get selected session
+	inst := m.getSelectedInstance()
+	if inst == nil {
+		m.err = fmt.Errorf("no session selected")
+		m.previousState = stateGlobalSearchAction
+		m.state = stateError
+		return *m, nil
+	}
+
+	// Session must be running to add tabs
+	if inst.Status != session.StatusRunning {
+		m.err = fmt.Errorf("session must be running to add tabs")
+		m.previousState = stateGlobalSearchAction
+		m.state = stateError
+		return *m, nil
+	}
+
+	// Generate tab name from snippet
+	tabName := "claude"
+	if entry.Snippet != "" {
+		tabName = entry.Snippet
+		if len(tabName) > 20 {
+			tabName = tabName[:20] + "..."
+		}
+		tabName = strings.ReplaceAll(tabName, "\n", " ")
+		tabName = strings.ReplaceAll(tabName, "\t", " ")
+	}
+
+	// Create a new tab with the resume session ID (uses existing NewForkedTab which does exactly this)
+	if err := inst.NewForkedTab(tabName, entry.SessionID); err != nil {
+		m.err = err
+		m.previousState = stateGlobalSearchAction
+		m.state = stateError
+		return *m, nil
+	}
+
+	// Refresh status bar
+	configureTmuxStatusBar(inst.TmuxSessionName(), inst.Name, inst.Color, inst.BgColor, inst.AutoYes)
+	m.storage.UpdateInstance(inst)
+
+	// Clear global search state
+	m.globalSearchResults = nil
+	m.globalSearchCursor = 0
+	m.globalSearchExpanded = -1
+	m.globalSearchConversation = nil
+	m.globalSearchScroll = 0
+	m.globalSearchSelectedEntry = nil
+
+	m.state = stateList
+	return *m, nil
+}
+
+// handleForkDialogKeys handles keyboard input in the fork dialog
+func (m Model) handleForkDialogKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		// Cancel fork
+		m.forkTarget = nil
+		m.state = stateList
+		return m, nil
+
+	case "tab":
+		// Toggle between tab and session
+		m.forkToTab = !m.forkToTab
+		return m, nil
+
+	case "up", "k":
+		// Select "New Tab"
+		m.forkToTab = true
+		return m, nil
+
+	case "down", "j":
+		// Select "New Session"
+		m.forkToTab = false
+		return m, nil
+
+	case "enter":
+		// Execute fork
+		if m.forkTarget == nil {
+			m.state = stateList
+			return m, nil
+		}
+
+		forkName := strings.TrimSpace(m.forkNameInput.Value())
+		if forkName == "" {
+			forkName = m.forkTarget.Name + " (fork)"
+		}
+
+		// Execute fork with --fork-session
+		newSessionID, err := m.forkTarget.ForkSession()
+		if err != nil {
+			m.err = fmt.Errorf("fork failed: %w", err)
+			m.previousState = stateList
+			m.state = stateError
+			m.forkTarget = nil
+			return m, nil
+		}
+
+		if m.forkToTab {
+			// Fork to new tab in same session
+			if err := m.forkTarget.NewForkedTab(forkName, newSessionID); err != nil {
+				m.err = fmt.Errorf("failed to create fork tab: %w", err)
+				m.previousState = stateList
+				m.state = stateError
+			} else {
+				// Update status bar
+				configureTmuxStatusBar(m.forkTarget.TmuxSessionName(), m.forkTarget.Name, m.forkTarget.Color, m.forkTarget.BgColor, m.forkTarget.AutoYes)
+				m.storage.UpdateInstance(m.forkTarget)
+			}
+		} else {
+			// Fork to new session
+			newInst, err := session.NewInstance(forkName, m.forkTarget.Path, false, session.AgentClaude)
+			if err != nil {
+				m.err = fmt.Errorf("failed to create fork session: %w", err)
+				m.previousState = stateList
+				m.state = stateError
+				m.forkTarget = nil
+				return m, nil
+			}
+
+			// Copy settings from original
+			newInst.GroupID = m.forkTarget.GroupID
+			newInst.Color = m.forkTarget.Color
+			newInst.BgColor = m.forkTarget.BgColor
+			newInst.FullRowColor = m.forkTarget.FullRowColor
+			newInst.ResumeSessionID = newSessionID
+			newInst.Notes = fmt.Sprintf("Forked from: %s", m.forkTarget.Name)
+
+			// Add to storage
+			if err := m.storage.AddInstance(newInst); err != nil {
+				m.err = fmt.Errorf("failed to save fork session: %w", err)
+				m.previousState = stateList
+				m.state = stateError
+				m.forkTarget = nil
+				return m, nil
+			}
+
+			// Start the forked session
+			if err := newInst.StartWithResume(newSessionID); err != nil {
+				m.err = fmt.Errorf("failed to start fork session: %w", err)
+				m.previousState = stateList
+				m.state = stateError
+			} else {
+				m.storage.UpdateInstance(newInst)
+			}
+
+			m.instances = append(m.instances, newInst)
+
+			// Move cursor to new session
+			if len(m.groups) > 0 {
+				m.buildVisibleItems()
+				for i, item := range m.visibleItems {
+					if !item.isGroup && item.instance != nil && item.instance.ID == newInst.ID {
+						m.cursor = i
+						break
+					}
+				}
+			} else {
+				m.cursor = len(m.instances) - 1
+			}
+		}
+
+		m.forkTarget = nil
+		m.state = stateList
+		return m, nil
+	}
+
+	// Update name input
+	var cmd tea.Cmd
+	m.forkNameInput, cmd = m.forkNameInput.Update(msg)
+	return m, cmd
 }

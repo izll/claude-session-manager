@@ -280,6 +280,7 @@ func (m Model) selectAgentView() string {
 		{session.AgentCodex, "🧠", "Codex CLI", "OpenAI coding agent (auto-yes)"},
 		{session.AgentAmazonQ, "📦", "Amazon Q", "AWS AI assistant (auto-yes)"},
 		{session.AgentOpenCode, "💻", "OpenCode", "Terminal AI assistant"},
+		{session.AgentCursor, "🖱️", "Cursor", "AI-powered code editor"},
 		{session.AgentCustom, "⚙️", "Custom", "Custom command"},
 	}
 
@@ -579,6 +580,7 @@ func (m Model) newTabAgentView() string {
 		{session.AgentCodex, "🧠", "Codex CLI"},
 		{session.AgentAmazonQ, "📦", "Amazon Q"},
 		{session.AgentOpenCode, "💻", "OpenCode"},
+		{session.AgentCursor, "🖱️", "Cursor"},
 		{session.AgentCustom, "⚙️", "Custom"},
 	}
 

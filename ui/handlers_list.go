@@ -221,36 +221,66 @@ func (m *Model) navigatePinned(direction int) {
 		return
 	}
 
-	// If groups exist, use visible items
-	if len(m.groups) > 0 {
+	// If groups or favorites exist, navigate through ALL session positions (including duplicates)
+	if len(m.groups) > 0 || m.hasFavorites() {
 		m.buildVisibleItems()
 
-		// Find current pinned index in visible items (sessions only)
-		currentIdx := -1
+		// Build list of all session indices in visual order (no deduplication)
+		var sessionIndices []int
 		for i, item := range m.visibleItems {
-			if !item.isGroup && item.instance.ID == m.markedSessionID {
-				currentIdx = i
+			if !item.isGroup && item.instance != nil {
+				sessionIndices = append(sessionIndices, i)
+			}
+		}
+
+		if len(sessionIndices) == 0 {
+			return
+		}
+
+		// Find current position by markedVisibleIndex
+		currentPos := -1
+		for i, idx := range sessionIndices {
+			if idx == m.markedVisibleIndex {
+				currentPos = i
 				break
 			}
 		}
 
-		if currentIdx == -1 {
+		// If not found by index, try to find by ID (fallback)
+		if currentPos == -1 {
+			for i, idx := range sessionIndices {
+				if m.visibleItems[idx].instance.ID == m.markedSessionID {
+					currentPos = i
+					break
+				}
+			}
+		}
+
+		if currentPos == -1 {
+			// Start from beginning or end based on direction
+			if direction > 0 {
+				m.markedVisibleIndex = sessionIndices[0]
+				m.markedSessionID = m.visibleItems[sessionIndices[0]].instance.ID
+			} else {
+				m.markedVisibleIndex = sessionIndices[len(sessionIndices)-1]
+				m.markedSessionID = m.visibleItems[sessionIndices[len(sessionIndices)-1]].instance.ID
+			}
 			return
 		}
 
-		// Find next/previous session (skip groups)
-		newIdx := currentIdx + direction
-		for newIdx >= 0 && newIdx < len(m.visibleItems) {
-			if !m.visibleItems[newIdx].isGroup {
-				m.markedSessionID = m.visibleItems[newIdx].instance.ID
-				return
-			}
-			newIdx += direction
+		// Navigate
+		newPos := currentPos + direction
+		if newPos < 0 {
+			newPos = 0
+		} else if newPos >= len(sessionIndices) {
+			newPos = len(sessionIndices) - 1
 		}
+		m.markedVisibleIndex = sessionIndices[newPos]
+		m.markedSessionID = m.visibleItems[sessionIndices[newPos]].instance.ID
 		return
 	}
 
-	// Original behavior for non-grouped view
+	// Non-grouped view: navigate through m.instances
 	currentIdx := -1
 	for i, inst := range m.instances {
 		if inst.ID == m.markedSessionID {
@@ -271,6 +301,7 @@ func (m *Model) navigatePinned(direction int) {
 	}
 
 	m.markedSessionID = m.instances[newIdx].ID
+	m.markedVisibleIndex = newIdx
 }
 
 // handleListKeys handles keyboard input in the main list view
@@ -313,15 +344,19 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.state = stateProjectSelect
 		return m, nil
 
-	case "up", "k":
+	case "up":
 		// In split view with focus on pinned: change pinned session
 		if m.splitView && m.splitFocus == 1 && m.markedSessionID != "" {
 			m.navigatePinned(-1)
 			m.saveSettings()
-		} else if len(m.groups) > 0 {
+		} else if len(m.groups) > 0 || m.hasFavorites() {
 			m.buildVisibleItems()
 			if m.cursor > 0 {
 				m.cursor--
+				// Skip separators (nil instance, not a group)
+				for m.cursor > 0 && !m.visibleItems[m.cursor].isGroup && m.visibleItems[m.cursor].instance == nil {
+					m.cursor--
+				}
 				m.resetScroll()
 				m.resizeSelectedPane()
 			}
@@ -331,22 +366,33 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.resizeSelectedPane()
 		}
 
-	case "down", "j":
+	case "down":
 		// In split view with focus on pinned: change pinned session
 		if m.splitView && m.splitFocus == 1 && m.markedSessionID != "" {
 			m.navigatePinned(1)
 			m.saveSettings()
-		} else if len(m.groups) > 0 {
+		} else if len(m.groups) > 0 || m.hasFavorites() {
 			m.buildVisibleItems()
 			if m.cursor < len(m.visibleItems)-1 {
+				m.cursor++
+				// Skip separators (nil instance, not a group)
+				for m.cursor < len(m.visibleItems)-1 && !m.visibleItems[m.cursor].isGroup && m.visibleItems[m.cursor].instance == nil {
+					m.cursor++
+				}
+				m.resetScroll()
+				m.resizeSelectedPane()
+			}
+		} else {
+			// Use filtered list length when search is active
+			maxIdx := len(m.instances) - 1
+			if m.searchActive {
+				maxIdx = len(m.getFilteredInstances()) - 1
+			}
+			if m.cursor < maxIdx {
 				m.cursor++
 				m.resetScroll()
 				m.resizeSelectedPane()
 			}
-		} else if m.cursor < len(m.instances)-1 {
-			m.cursor++
-			m.resetScroll()
-			m.resizeSelectedPane()
 		}
 
 	case "ctrl+up":
@@ -429,18 +475,20 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "enter":
 		// Check if a group is selected
-		if len(m.groups) > 0 {
-			m.buildVisibleItems()
-			if m.cursor >= 0 && m.cursor < len(m.visibleItems) {
-				item := m.visibleItems[m.cursor]
-				if item.isGroup {
-					// Toggle collapse
+		m.buildVisibleItems()
+		if m.cursor >= 0 && m.cursor < len(m.visibleItems) {
+			item := m.visibleItems[m.cursor]
+			if item.isGroup {
+				// Toggle collapse - special handling for favorites
+				if item.group.ID == FavoritesGroupID {
+					m.favoritesCollapsed = !m.favoritesCollapsed
+				} else {
 					m.storage.ToggleGroupCollapsed(item.group.ID)
 					groups, _ := m.storage.GetGroups()
 					m.groups = groups
-					m.buildVisibleItems()
-					return m, nil
 				}
+				m.buildVisibleItems()
+				return m, nil
 			}
 		}
 		if cmd := m.handleEnterSession(); cmd != nil {
@@ -530,6 +578,10 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor >= 0 && m.cursor < len(m.visibleItems) {
 			item := m.visibleItems[m.cursor]
 			if item.isGroup {
+				// Can't delete favorites group
+				if item.group.ID == FavoritesGroupID {
+					break
+				}
 				// Delete group
 				if err := m.storage.RemoveGroup(item.group.ID); err != nil {
 					m.err = err
@@ -571,6 +623,10 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor >= 0 && m.cursor < len(m.visibleItems) {
 			item := m.visibleItems[m.cursor]
 			if item.isGroup {
+				// Can't rename favorites group
+				if item.group.ID == FavoritesGroupID {
+					break
+				}
 				// Rename group
 				m.groupInput.SetValue(item.group.Name)
 				m.groupInput.Focus()
@@ -586,16 +642,60 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?", "f1":
 		m.state = stateHelp
 
+	case "f":
+		// Fork session (Claude only)
+		if inst := m.getSelectedInstance(); inst != nil {
+			if inst.Agent != session.AgentClaude {
+				m.err = fmt.Errorf("fork is only supported for Claude sessions")
+				m.previousState = stateList
+				m.state = stateError
+				return m, nil
+			}
+			if inst.Status != session.StatusRunning {
+				m.err = fmt.Errorf("session must be running to fork")
+				m.previousState = stateList
+				m.state = stateError
+				return m, nil
+			}
+			if inst.ResumeSessionID == "" {
+				m.err = fmt.Errorf("no session ID to fork - session may not have started yet")
+				m.previousState = stateList
+				m.state = stateError
+				return m, nil
+			}
+			// Set up fork dialog
+			m.forkTarget = inst
+			m.forkToTab = true // Default to new tab
+			// Pre-fill with current tab name
+			defaultName := inst.Name
+			if inst.Status == session.StatusRunning {
+				windows := inst.GetWindowList()
+				for _, w := range windows {
+					if w.Active {
+						defaultName = w.Name
+						break
+					}
+				}
+			}
+			m.forkNameInput.SetValue(defaultName)
+			m.forkNameInput.CursorEnd()
+			m.forkNameInput.Focus()
+			m.state = stateForkDialog
+			return m, textinput.Blink
+		}
+
 	case "c":
 		// Check if a group is selected
-		if len(m.groups) > 0 {
-			m.buildVisibleItems()
-			if m.cursor >= 0 && m.cursor < len(m.visibleItems) {
-				item := m.visibleItems[m.cursor]
-				if item.isGroup {
-					m.handleGroupColorPicker(item.group)
-					return m, nil
+		m.buildVisibleItems()
+		if m.cursor >= 0 && m.cursor < len(m.visibleItems) {
+			item := m.visibleItems[m.cursor]
+			if item.isGroup {
+				// Can't change color of favorites group
+				if item.group.ID == FavoritesGroupID {
+					break
 				}
+				m.handleGroupColorPicker(item.group)
+				return m, nil
 			}
 		}
 		m.handleColorPicker()
@@ -614,26 +714,6 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if inst.Status == session.StatusRunning {
 				m.state = stateNewTabChoice
 				return m, nil
-			}
-		}
-
-	case "ctrl+f":
-		// Toggle follow on current tab
-		if inst := m.getSelectedInstance(); inst != nil {
-			if inst.Status == session.StatusRunning {
-				currentIdx := inst.GetCurrentWindowIndex()
-				if currentIdx > 0 { // Can't unfollow window 0
-					followed := inst.ToggleWindowFollow(currentIdx)
-					m.storage.UpdateInstance(inst)
-					if followed {
-						m.err = fmt.Errorf("Tab is now tracked as agent")
-					} else {
-						m.err = fmt.Errorf("Tab is no longer tracked")
-					}
-					m.previousState = stateList
-					m.state = stateError
-					return m, nil
-				}
 			}
 		}
 
@@ -717,10 +797,14 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.cursor >= 0 && m.cursor < len(m.visibleItems) {
 				item := m.visibleItems[m.cursor]
 				if item.isGroup {
-					m.storage.ToggleGroupCollapsed(item.group.ID)
-					// Reload groups
-					groups, _ := m.storage.GetGroups()
-					m.groups = groups
+					if item.group.ID == FavoritesGroupID {
+						m.favoritesCollapsed = !m.favoritesCollapsed
+					} else {
+						m.storage.ToggleGroupCollapsed(item.group.ID)
+						// Reload groups
+						groups, _ := m.storage.GetGroups()
+						m.groups = groups
+					}
 					m.buildVisibleItems()
 				}
 			}
@@ -732,10 +816,22 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if inst != nil {
 			if m.markedSessionID == inst.ID {
 				m.markedSessionID = "" // Unmark if already marked
+				m.markedVisibleIndex = -1
 			} else {
 				m.markedSessionID = inst.ID
+				// Set markedVisibleIndex to current cursor position
+				m.markedVisibleIndex = m.cursor
 			}
 			m.saveSettings()
+		}
+
+	case "*":
+		// Toggle favorite
+		inst := m.getSelectedInstance()
+		if inst != nil {
+			inst.Favorite = !inst.Favorite
+			m.storage.UpdateInstance(inst)
+			m.buildVisibleItems()
 		}
 
 	case "p":
@@ -792,9 +888,13 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor >= 0 && m.cursor < len(m.visibleItems) {
 			item := m.visibleItems[m.cursor]
 			if item.isGroup && item.group.Collapsed {
-				m.storage.ToggleGroupCollapsed(item.group.ID)
-				groups, _ := m.storage.GetGroups()
-				m.groups = groups
+				if item.group.ID == FavoritesGroupID {
+					m.favoritesCollapsed = false
+				} else {
+					m.storage.ToggleGroupCollapsed(item.group.ID)
+					groups, _ := m.storage.GetGroups()
+					m.groups = groups
+				}
 				m.buildVisibleItems()
 			}
 		}
@@ -805,11 +905,51 @@ func (m Model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor >= 0 && m.cursor < len(m.visibleItems) {
 			item := m.visibleItems[m.cursor]
 			if item.isGroup && !item.group.Collapsed {
-				m.storage.ToggleGroupCollapsed(item.group.ID)
-				groups, _ := m.storage.GetGroups()
-				m.groups = groups
+				if item.group.ID == FavoritesGroupID {
+					m.favoritesCollapsed = true
+				} else {
+					m.storage.ToggleGroupCollapsed(item.group.ID)
+					groups, _ := m.storage.GetGroups()
+					m.groups = groups
+				}
 				m.buildVisibleItems()
 			}
+		}
+
+	case "/":
+		// Start search mode
+		m.searchInput.SetValue("")
+		m.searchInput.Focus()
+		m.state = stateSearch
+		return m, textinput.Blink
+
+	case "ctrl+f":
+		// Start global search mode (search all agent histories)
+		m.globalSearchInput.SetValue("")
+		m.globalSearchResults = nil
+		m.globalSearchCursor = 0
+		m.globalSearchExpanded = -1
+		m.globalSearchConversation = nil
+		m.globalSearchScroll = 0
+		m.globalSearchLastQuery = ""
+		m.globalSearchPendingQuery = ""
+		m.globalSearchDebounceActive = false
+		m.globalSearchConvLoading = false
+		// Check if history index is already loaded
+		if m.historyIndex.IsLoaded() {
+			m.globalSearchInput.Focus()
+			m.state = stateGlobalSearch
+			return m, textinput.Blink
+		}
+		// Show loading state and load history async
+		m.state = stateGlobalSearchLoading
+		return m, m.loadHistoryCmd()
+
+	case "esc":
+		// Clear active search filter
+		if m.searchActive {
+			m.searchQuery = ""
+			m.searchActive = false
 		}
 	}
 

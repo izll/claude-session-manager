@@ -37,9 +37,13 @@ A powerful terminal UI (TUI) application for managing multiple AI coding assista
 - **Fancy Status Bar** - Styled bottom bar with highlighted keys, toggle indicators, and separators
 - **Scrollable Help View** - Comprehensive help page with keyboard shortcuts, detailed descriptions, and scroll support
 - **Session Groups** - Organize sessions into collapsible groups for better organization
+- **Favorites** - Mark important sessions with ⭐ for quick access at the top of the list
 - **Session Notes** - Add persistent notes/comments to sessions and tabs
 - **Split View** - Compare two sessions side-by-side with pinned preview
 - **Diff View** - View git changes in preview pane (session diff or full uncommitted)
+- **Session Search** - Filter sessions by name or notes with vim-style `/` key
+- **Global History Search** - Search across all agent histories (Claude, Aider, OpenCode, Terminal) with `Ctrl+F`
+- **Fork Session** - Fork Claude sessions to new tabs or separate sessions for branching conversations
 
 ## Installation
 
@@ -95,14 +99,14 @@ Install options:
 **Debian/Ubuntu (.deb):**
 ```bash
 # Download from releases
-wget https://github.com/izll/agent-session-manager/releases/download/v0.6.5/asmgr_0.6.5_linux_x86_64.deb
+wget https://github.com/izll/agent-session-manager/releases/download/v0.7.5/asmgr_0.6.5_linux_x86_64.deb
 sudo dpkg -i asmgr_0.6.5_linux_x86_64.deb
 ```
 
 **RedHat/Fedora/Rocky (.rpm):**
 ```bash
 # Download from releases
-wget https://github.com/izll/agent-session-manager/releases/download/v0.6.5/asmgr_0.6.5_linux_x86_64.rpm
+wget https://github.com/izll/agent-session-manager/releases/download/v0.7.5/asmgr_0.6.5_linux_x86_64.rpm
 sudo rpm -i asmgr_0.6.5_linux_x86_64.rpm
 ```
 
@@ -180,6 +184,9 @@ asmgr
 | `PgUp` | Scroll preview up (half page) |
 | `Home` | Scroll preview to top |
 | `End` | Scroll preview to bottom |
+| `/` | Search/filter sessions by name or notes |
+| `Ctrl+F` | Global history search (all agents) |
+| `Esc` | Clear search filter |
 
 #### Session Actions
 | Key | Action |
@@ -192,6 +199,7 @@ asmgr
 | `e` | Rename session |
 | `r` | Resume previous conversation or start new (supports Claude, Gemini, Codex, OpenCode, Amazon Q) |
 | `p` | Send prompt/message to running session |
+| `f` | Fork session (Claude only) - creates branch of current conversation |
 | `N` | Add/edit notes (session or tab) |
 | `d` | Delete session or tab (asks which when multiple tabs exist) |
 
@@ -206,11 +214,12 @@ asmgr
 | `Ctrl+←` / `Ctrl+→` | Switch between tabs (alternative) |
 | `Ctrl+f` | Toggle tab tracking (follow/unfollow) |
 
-#### Groups
+#### Groups & Favorites
 | Key | Action |
 |-----|--------|
 | `g` | Create new group |
 | `G` | Assign session to group |
+| `*` | Toggle favorite (⭐ appears at top) |
 | `→` | Expand group (when group selected) |
 | `←` | Collapse group (when group selected) |
 | `Tab` | Toggle group collapse (when group selected) |
@@ -310,19 +319,30 @@ Press `a` on any session to see start options:
 
 This allows you to work on multiple tasks in the same project simultaneously, each with their own AI session.
 
-## Session Groups
+## Session Groups & Favorites
 
-Organize your sessions into collapsible groups:
+Organize your sessions into collapsible groups and mark favorites:
 
 ```
+⭐ Favorites ▼ [2]
+   ├── ● important-project
+   └── ● daily-tasks
+
 📁 Backend ▼ [3]
-   ● api-server
-   ● database-worker
-   ○ cache-service
+   ├── ● api-server
+   ├── ● database-worker
+   └── ○ cache-service
 📁 Frontend ▶ [2]  (collapsed)
    ● misc-session
 ```
 
+### Favorites
+- Press `*` to toggle favorite on any session
+- Favorites appear in a special ⭐ group at the top
+- Sessions also remain in their original location
+- The favorites group is hidden when empty
+
+### Groups
 - Press `g` to create a new group
 - Press `G` to assign the selected session to a group
 - Press `→` to expand a group, `←` to collapse it
@@ -412,6 +432,57 @@ Use diff view to:
 - Track progress during a coding session
 - Compare uncommitted changes across sessions
 
+## Global History Search
+
+Search across all your AI agent conversation histories with `Ctrl+F`:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  🔍 Global History Search              (ASMGR sessions only)│
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │ search query...                                         ││
+│  └─────────────────────────────────────────────────────────┘│
+│                                                             │
+│  Found 12 results across 3 agents                           │
+│  ───────────────────────────────────────────────────────────│
+│                                                             │
+│  🤖 Claude • 2 hours ago • /home/user/project               │
+│    "...fix the login bug in authentication..."              │
+│                                                             │
+│  💻 OpenCode • 1 day ago • /home/user/other                 │
+│    "...refactor the database layer..."                      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Supported Sources
+- **Claude** - Searches `~/.claude/projects/` history files
+- **Aider** - Searches `~/.aider.chat.history.md`
+- **OpenCode** - Searches local `.opencode/opencode.db` databases
+- **Terminal** - Searches `~/.bash_history` or `~/.zsh_history`
+
+### Features
+- Real-time search with debounced input
+- Conversation preview in right pane
+- Press `Enter` to jump directly to matching ASMGR session
+- Auto-scrolls preview to first match
+- Only searches within ASMGR project directories
+
+## Fork Session
+
+Fork a Claude conversation to create a branch point:
+
+- Press `f` on any Claude session to fork
+- Choose destination:
+  - **New Tab** - Fork as a new tab in the same session
+  - **New Session** - Fork as a separate session
+- The forked conversation includes all previous context
+- Continue in different directions from the same point
+
+This is useful for:
+- Trying alternative approaches without losing progress
+- Creating checkpoints before risky changes
+- Running parallel experiments from the same context
+
 ## Projects
 
 Projects allow you to organize your sessions into separate workspaces. Each project has its own isolated session list and groups.
@@ -423,7 +494,7 @@ When you start ASMGR, you'll see the project selector:
 ```
 ┌─────────────────────────────────────┐
 │  Agent Session Manager              │
-│             v0.6.5                  │
+│             v0.7.5                  │
 ├─────────────────────────────────────┤
 │  > Backend API         [5 sessions] │
 │    Frontend App        [3 sessions] │

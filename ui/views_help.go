@@ -73,11 +73,15 @@ func buildHelpContent(width int) (string, int) {
 	b.WriteString("\n")
 	b.WriteString(separatorStyle.Render("  " + strings.Repeat("─", 65)))
 	b.WriteString("\n")
-	b.WriteString(renderRow("↑/k ↓/j", "Move up/down", "Ctrl+↑/↓", "Reorder session"))
+	b.WriteString(renderRow("↑/↓", "Move up/down", "Ctrl+↑/↓", "Reorder session"))
 	b.WriteString("\n")
 	b.WriteString(renderRow("Alt+↑/↓", "Scroll line", "PgUp/PgDn", "Scroll half page"))
 	b.WriteString("\n")
-	b.WriteString("  " + renderKey("Home/End", "Scroll to top/bottom"))
+	b.WriteString(renderRow("Home/End", "Scroll to top/bottom", "/", "Search sessions"))
+	b.WriteString("\n")
+	b.WriteString("  " + renderKey("^F", "Global history search"))
+	b.WriteString("\n")
+	b.WriteString("  " + noteStyle.Render("     ↳ ESC clears search filter"))
 	b.WriteString("\n\n")
 
 	// ═══════════════════════════════════════════════════════════════════
@@ -98,6 +102,10 @@ func buildHelpContent(width int) (string, int) {
 	b.WriteString("  " + noteStyle.Render("     ↳ x/d asks session or tab when multiple tabs exist"))
 	b.WriteString("\n")
 	b.WriteString(renderRow("r", "Resume conversation", "p", "Send prompt"))
+	b.WriteString("\n")
+	b.WriteString(renderRow("f", "Fork session (Claude)", "", ""))
+	b.WriteString("\n")
+	b.WriteString("  " + noteStyle.Render("     ↳ Fork to new tab or new session"))
 	b.WriteString("\n\n")
 
 	// ═══════════════════════════════════════════════════════════════════
@@ -126,6 +134,8 @@ func buildHelpContent(width int) (string, int) {
 	b.WriteString(renderRow("g", "Create group", "G", "Assign to group"))
 	b.WriteString("\n")
 	b.WriteString(renderRow("→", "Expand group", "←", "Collapse group"))
+	b.WriteString("\n")
+	b.WriteString("  " + renderKey("*", "Toggle favorite (⭐ group)"))
 	b.WriteString("\n\n")
 
 	// ═══════════════════════════════════════════════════════════════════

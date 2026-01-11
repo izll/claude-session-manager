@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -25,10 +26,15 @@ type rpmDownloadDoneMsg struct {
 	rpmPath string
 }
 
+// History loading message (for global search)
+type historyLoadedMsg struct {
+	err error
+}
+
 // Version info
 const (
 	AppName    = "asmgr"
-	AppVersion = "0.6.5"
+	AppVersion = "0.7.5"
 )
 
 // Layout constants
@@ -51,6 +57,7 @@ const (
 	PromptMaxWidth       = 70  // Maximum prompt input width
 	TickInterval         = 100 * time.Millisecond // UI refresh interval for selected
 	SlowTickInterval     = 500 * time.Millisecond // UI refresh interval for others
+	FavoritesGroupID     = "__favorites__"        // Virtual group ID for favorites
 )
 
 // state represents the current UI state
@@ -58,7 +65,7 @@ type state int
 
 const (
 	stateProjectSelect state = iota // Project selection at startup
-	stateNewProject                  // Creating new project
+	stateNewProject                 // Creating new project
 	stateList
 	stateNewName
 	stateNewPath
@@ -96,9 +103,17 @@ const (
 	stateStopChoice       // Choosing between stopping session or tab
 	stateConfirmStopTab   // Confirming tab stop
 	stateConfirmYolo      // Confirming YOLO mode toggle
+	stateSearch              // Searching/filtering sessions
+	stateGlobalSearchLoading // Loading history for global search
+	stateGlobalSearch        // Global history search across all agents
+	stateForkDialog          // Fork session dialog (name + destination)
+	stateGlobalSearchAction      // Action selection for global search result (open/new session/new tab)
+	stateGlobalSearchConfirmJump // Confirm jump to existing session
+	stateGlobalSearchNewName     // Entering name for new session from global search
+	stateGlobalSearchSelectMatch // Selecting from multiple matching sessions/tabs
 )
 
-// Model represents the main TUI application state for Claude Session Manager.
+// Model represents the main TUI application state for Agent Session Manager.
 // It manages multiple Claude Code instances, handles user input, and renders
 // the split-pane interface with session list and preview.
 type Model struct {
@@ -140,11 +155,13 @@ type Model struct {
 	compactList     bool                      // No extra line between sessions
 	hideStatusLines bool                      // Hide last output line under sessions
 	showAgentIcons  bool                      // Show agent type icons in session list
-	splitView       bool                      // Split preview mode
-	markedSessionID string                    // Session ID marked for split view
-	splitFocus      int                       // 0 = selected (bottom), 1 = pinned (top)
-	groups          []*session.Group          // Session groups
-	groupInput      textinput.Model           // Input for group name
+	splitView          bool                      // Split preview mode
+	markedSessionID    string                    // Session ID marked for split view
+	markedVisibleIndex int                       // Visual index for pinned navigation (handles duplicates)
+	splitFocus         int                       // 0 = selected (bottom), 1 = pinned (top)
+	groups             []*session.Group          // Session groups
+	favoritesCollapsed bool                      // Whether favorites group is collapsed
+	groupInput         textinput.Model           // Input for group name
 	groupCursor     int                       // Cursor for group selection
 	visibleItems    []visibleItem             // Flattened list of visible items (groups + sessions)
 	pendingGroupID  string                    // Group ID for new session creation
@@ -173,6 +190,45 @@ type Model struct {
 	// Diff pane
 	diffPane       *DiffPane // Diff display component
 	showDiff       bool      // Show diff tab instead of preview
+
+	// Fork dialog
+	forkNameInput textinput.Model    // Input for fork name
+	forkToTab     bool               // true = fork to new tab, false = fork to new session
+	forkTarget    *session.Instance  // Session being forked
+
+	// Search
+	searchInput  textinput.Model // Search input field
+	searchQuery  string          // Active search query (for filtering)
+	searchActive bool            // Whether search filter is active
+
+	// Global Search (multi-agent history)
+	globalSearchInput          textinput.Model                  // Search input field
+	globalSearchResults        []session.HistoryEntry           // Search results
+	globalSearchCursor         int                              // Cursor in results list
+	globalSearchExpanded       int                              // Expanded result index (-1 = none)
+	historyIndex               *session.HistoryIndex            // History index for all agents
+	globalSearchConversation   []session.ConversationMessage    // Cached conversation for preview
+	globalSearchScroll         int                              // Scroll position in conversation preview
+	globalSearchLastCursor     int                              // Last cursor position (to detect changes)
+	globalSearchLastQuery      string                           // Last search query (for debounce)
+	globalSearchPendingQuery   string                           // Query waiting to be searched
+	globalSearchDebounceActive bool                             // Whether debounce timer is active
+	globalSearchConvLoading    bool                             // Whether conversation is loading
+
+	// Global search action dialog
+	globalSearchActionCursor    int                              // Cursor for action selection (0=new session, 1=to group, 2=as tab)
+	globalSearchSelectedEntry   *session.HistoryEntry            // Selected history entry for action
+	globalSearchMatchedSession  *session.Instance                // Matched session for confirm jump dialog
+	globalSearchMatchedTabIndex int                              // Matched tab index (-1 = main session, >=0 = tab index)
+	globalSearchMatches         []globalSearchMatch              // All matching sessions/tabs for selection
+	globalSearchMatchCursor     int                              // Cursor for match selection
+}
+
+// globalSearchMatch represents a matched session/tab for selection
+type globalSearchMatch struct {
+	Session  *session.Instance
+	TabIndex int    // -1 = main session, >=0 = tab index
+	TabName  string // Display name for the tab
 }
 
 // visibleItem represents an item in the flattened list view (group header or session)
@@ -188,6 +244,15 @@ type tickMsg time.Time
 // reattachMsg is sent when returning from an attached session
 type reattachMsg struct{}
 
+// globalSearchDebounceMsg triggers delayed search after typing stops
+type globalSearchDebounceMsg struct{}
+
+// globalSearchConvLoadedMsg indicates conversation finished loading
+type globalSearchConvLoadedMsg struct {
+	conversation []session.ConversationMessage
+	cursorPos    int // cursor position when loading started
+}
+
 // NewModel creates and initializes a new TUI Model.
 // It loads existing sessions from storage, sets up input fields, and
 // prepares the initial state for the Bubble Tea program.
@@ -196,9 +261,6 @@ func NewModel() (Model, error) {
 	if err != nil {
 		return Model{}, err
 	}
-
-	// Don't load sessions yet - wait until project is selected
-	// instances, groups, settings will be loaded in switchToProject
 
 	nameInput := textinput.New()
 	nameInput.Placeholder = "Session name"
@@ -236,6 +298,22 @@ func NewModel() (Model, error) {
 	notesInput.SetWidth(70)
 	notesInput.SetHeight(9)
 
+	searchInput := textinput.New()
+	searchInput.Placeholder = "Search..."
+	searchInput.CharLimit = 100
+	searchInput.Prompt = "/ "
+	searchInput.Width = 200 // Will be adjusted on resize
+
+	globalSearchInput := textinput.New()
+	globalSearchInput.Placeholder = "Search all agents..."
+	globalSearchInput.CharLimit = 200
+	globalSearchInput.Prompt = ""
+	globalSearchInput.Width = 200 // Will be adjusted on resize
+
+	forkNameInput := textinput.New()
+	forkNameInput.Placeholder = "Fork name"
+	forkNameInput.CharLimit = 50
+
 	// Load projects
 	projectsData, err := storage.LoadProjects()
 	if err != nil {
@@ -253,9 +331,14 @@ func NewModel() (Model, error) {
 		customCmdInput:  customCmdInput,
 		projectInput:    projectInput,
 		notesInput:      notesInput,
+		searchInput:     searchInput,
+		globalSearchInput:   globalSearchInput,
+		globalSearchExpanded: -1,
+		historyIndex:        session.NewHistoryIndex(),
+		forkNameInput:       forkNameInput,
 		projects:        projectsData.Projects,
-		projectCursor:   0, // Default to first project or "Continue without project"
-		groups:          []*session.Group{}, // Empty until project selected
+		projectCursor:   0,
+		groups:          []*session.Group{},
 		lastLines:           make(map[string]string),
 		prevContent:         make(map[string]string),
 		isActive:            make(map[string]bool),
@@ -263,8 +346,6 @@ func NewModel() (Model, error) {
 		windowActivityState: make(map[string]map[int]session.SessionActivity),
 		diffPane:            NewDiffPane(),
 	}
-
-	// Sessions will be loaded when user selects a project via switchToProject
 
 	return m, nil
 }
@@ -285,6 +366,16 @@ func (m Model) Init() tea.Cmd {
 		tea.EnableMouseCellMotion,
 		checkForUpdateCmd(),
 	)
+}
+
+// loadHistoryCmd loads history index for global search asynchronously
+func (m *Model) loadHistoryCmd() tea.Cmd {
+	// Pass instances for terminal search
+	m.historyIndex.SetInstances(m.instances)
+	return func() tea.Msg {
+		err := m.historyIndex.Load()
+		return historyLoadedMsg{err: err}
+	}
 }
 
 // checkForUpdateCmd checks for updates in the background (once per day, after 30s delay)
@@ -352,11 +443,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Update search input widths
+		m.searchInput.Width = msg.Width - 6 // Account for prompt and padding
+		m.globalSearchInput.Width = ListPaneWidth - 6
 		// Resize selected instance's tmux pane to match preview width
 		if inst := m.getSelectedInstance(); inst != nil && inst.Status == session.StatusRunning {
 			tmuxWidth, tmuxHeight := m.calculateTmuxDimensions()
 			inst.ResizePane(tmuxWidth, tmuxHeight)
 			inst.UpdateDetachBinding(tmuxWidth, tmuxHeight)
+		}
+		return m, nil
+
+	case historyLoadedMsg:
+		// History loaded - transition to global search
+		if msg.err != nil {
+			m.err = msg.err
+			m.previousState = stateList
+			m.state = stateError
+			return m, nil
+		}
+		m.state = stateGlobalSearch
+		m.globalSearchInput.Focus()
+
+		// Re-run search if there was a query (after Ctrl+R reload)
+		query := strings.TrimSpace(m.globalSearchInput.Value())
+		if query != "" {
+			m.globalSearchResults = m.historyIndex.Search(query)
+			m.globalSearchCursor = 0
+			m.globalSearchLastQuery = query
+			// Load conversation for first result
+			return m, m.loadConversationAsync()
 		}
 		return m, nil
 
@@ -466,6 +582,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		return m.handleTick()
 
+	case globalSearchDebounceMsg:
+		return m.handleGlobalSearchDebounce()
+
+	case globalSearchConvLoadedMsg:
+		return m.handleGlobalSearchConvLoaded(msg)
+
 	case tea.KeyMsg:
 		switch m.state {
 		case stateProjectSelect:
@@ -538,6 +660,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleConfirmStopTabKeys(msg)
 		case stateConfirmYolo:
 			return m.handleConfirmYoloKeys(msg)
+		case stateSearch:
+			return m.handleSearchKeys(msg)
+		case stateGlobalSearchLoading:
+			// Only ESC to cancel loading
+			if msg.String() == "esc" {
+				m.state = stateList
+				return m, nil
+			}
+			return m, nil
+		case stateGlobalSearch:
+			return m.handleGlobalSearchKeys(msg)
+		case stateForkDialog:
+			return m.handleForkDialogKeys(msg)
+		case stateGlobalSearchAction:
+			return m.handleGlobalSearchActionKeys(msg)
+		case stateGlobalSearchConfirmJump:
+			return m.handleGlobalSearchConfirmJumpKeys(msg)
+		case stateGlobalSearchNewName:
+			return m.handleGlobalSearchNewNameKeys(msg)
+		case stateGlobalSearchSelectMatch:
+			return m.handleGlobalSearchSelectMatchKeys(msg)
 		}
 	}
 
@@ -567,6 +710,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if m.state == stateNotes {
 		m.notesInput, cmd = m.notesInput.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+	if m.state == stateSearch {
+		m.searchInput, cmd = m.searchInput.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+	if m.state == stateGlobalSearch {
+		m.globalSearchInput, cmd = m.globalSearchInput.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+	if m.state == stateForkDialog {
+		m.forkNameInput, cmd = m.forkNameInput.Update(msg)
 		cmds = append(cmds, cmd)
 	}
 
@@ -694,11 +849,55 @@ func (m *Model) getMaxColorItems() int {
 func (m *Model) buildVisibleItems() {
 	m.visibleItems = []visibleItem{}
 
-	// Get sessions by group
+	// Collect favorite sessions first
+	var favoriteSessions []*session.Instance
+
+	for _, inst := range m.instances {
+		if inst.Favorite {
+			// Skip if doesn't match search
+			if m.searchActive && !m.matchesSearch(inst) {
+				continue
+			}
+			favoriteSessions = append(favoriteSessions, inst)
+		}
+	}
+
+	// Add favorites group at top if there are favorites
+	if len(favoriteSessions) > 0 {
+		favGroup := &session.Group{
+			ID:        FavoritesGroupID,
+			Name:      "Favorites",
+			Collapsed: m.favoritesCollapsed,
+		}
+		m.visibleItems = append(m.visibleItems, visibleItem{
+			isGroup: true,
+			group:   favGroup,
+		})
+		if !m.favoritesCollapsed {
+			for _, inst := range favoriteSessions {
+				m.visibleItems = append(m.visibleItems, visibleItem{
+					isGroup:  false,
+					instance: inst,
+				})
+			}
+		}
+		// Add separator after favorites group
+		m.visibleItems = append(m.visibleItems, visibleItem{
+			isGroup:  false,
+			instance: nil, // nil instance = separator
+		})
+	}
+
+	// Get sessions by group (filtered if search is active)
+	// Favorites also appear in their original groups
 	groupedSessions := make(map[string][]*session.Instance)
 	var ungroupedSessions []*session.Instance
 
 	for _, inst := range m.instances {
+		// Skip if doesn't match search
+		if m.searchActive && !m.matchesSearch(inst) {
+			continue
+		}
 		if inst.GroupID == "" {
 			ungroupedSessions = append(ungroupedSessions, inst)
 		} else {
@@ -708,6 +907,10 @@ func (m *Model) buildVisibleItems() {
 
 	// Add groups and their sessions
 	for _, group := range m.groups {
+		// Skip empty groups when search is active
+		if m.searchActive && len(groupedSessions[group.ID]) == 0 {
+			continue
+		}
 		m.visibleItems = append(m.visibleItems, visibleItem{
 			isGroup: true,
 			group:   group,
@@ -731,21 +934,38 @@ func (m *Model) buildVisibleItems() {
 	}
 }
 
+// hasFavorites returns true if there are any favorite sessions
+func (m *Model) hasFavorites() bool {
+	for _, inst := range m.instances {
+		if inst.Favorite {
+			return true
+		}
+	}
+	return false
+}
+
 // getSelectedInstance returns the currently selected instance, or nil if a group is selected
 // Works in both grouped and non-grouped modes
 func (m *Model) getSelectedInstance() *session.Instance {
-	if len(m.groups) > 0 {
+	if len(m.groups) > 0 || m.hasFavorites() {
 		m.buildVisibleItems()
 		if m.cursor < 0 || m.cursor >= len(m.visibleItems) {
 			return nil
 		}
 		item := m.visibleItems[m.cursor]
-		if item.isGroup {
+		if item.isGroup || item.instance == nil {
 			return nil
 		}
 		return item.instance
 	}
-	// Non-grouped mode
+	// Non-grouped mode - use filtered list when search is active
+	if m.searchActive {
+		filtered := m.getFilteredInstances()
+		if m.cursor < 0 || m.cursor >= len(filtered) {
+			return nil
+		}
+		return filtered[m.cursor]
+	}
 	if m.cursor < 0 || m.cursor >= len(m.instances) {
 		return nil
 	}
@@ -803,21 +1023,33 @@ func (m *Model) isLastInGroup(index int) bool {
 	if item.isGroup || item.instance == nil {
 		return true
 	}
-	groupID := item.instance.GroupID
-	if groupID == "" {
-		// Ungrouped session - check if next is also ungrouped or end of list
-		if index+1 >= len(m.visibleItems) {
-			return true
-		}
-		nextItem := m.visibleItems[index+1]
-		return nextItem.isGroup || nextItem.instance.GroupID != ""
-	}
-	// Grouped session - check if next is in same group
+
+	// Check if next item exists
 	if index+1 >= len(m.visibleItems) {
 		return true
 	}
 	nextItem := m.visibleItems[index+1]
-	return nextItem.isGroup || nextItem.instance.GroupID != groupID
+
+	// Separator or group = last in current context
+	if nextItem.isGroup || nextItem.instance == nil {
+		return true
+	}
+
+	// For favorites: check if both current and next are favorites
+	if item.instance.Favorite {
+		// Last in favorites group if next is not a favorite
+		return !nextItem.instance.Favorite
+	}
+
+	// For regular groups
+	groupID := item.instance.GroupID
+	if groupID == "" {
+		// Ungrouped session - last if next has a group or is a favorite
+		return nextItem.instance.GroupID != "" || nextItem.instance.Favorite
+	}
+
+	// Grouped session - last if next is in different group or is a favorite shown separately
+	return nextItem.instance.GroupID != groupID
 }
 
 // switchToProject switches to a different project and reloads data
@@ -864,6 +1096,7 @@ func (m *Model) switchToProject(project *session.Project) error {
 	m.splitView = settings.SplitView
 	m.markedSessionID = settings.MarkedSessionID
 	m.splitFocus = settings.SplitFocus
+	m.markedVisibleIndex = -1 // Will be found after buildVisibleItems
 
 	// Reset maps
 	m.lastLines = make(map[string]string)

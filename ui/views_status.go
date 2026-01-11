@@ -133,6 +133,23 @@ func (m Model) buildStatusBar() string {
 		}
 	}
 
+	// Add search indicator at the left if filter is active
+	if m.searchActive && m.searchQuery != "" {
+		searchStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(ColorYellow)).
+			Bold(true)
+		query := m.searchQuery
+		if len(query) > 20 {
+			query = query[:19] + "…"
+		}
+		searchIndicator := searchStyle.Render("🔍 " + query)
+		escHint := descStyle.Render(" [ESC]")
+
+		statusText := strings.Join(items, sep)
+		rightPart := lipgloss.PlaceHorizontal(m.width-len(query)-10, lipgloss.Center, statusText)
+		return "\n " + searchIndicator + escHint + rightPart
+	}
+
 	statusText := strings.Join(items, sep)
 	return "\n" + lipgloss.PlaceHorizontal(m.width, lipgloss.Center, statusText)
 }

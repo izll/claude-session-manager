@@ -89,9 +89,77 @@ func (m Model) View() string {
 		return m.confirmStopTabView()
 	case stateConfirmYolo:
 		return m.confirmYoloView()
+	case stateSearch:
+		return m.searchView()
+	case stateGlobalSearchLoading:
+		return m.globalSearchLoadingView()
+	case stateGlobalSearch:
+		return m.globalSearchView()
+	case stateForkDialog:
+		return m.forkDialogView()
+	case stateGlobalSearchAction:
+		return m.globalSearchActionView()
+	case stateGlobalSearchConfirmJump:
+		return m.globalSearchConfirmJumpView()
+	case stateGlobalSearchNewName:
+		return m.globalSearchNewNameView()
+	case stateGlobalSearchSelectMatch:
+		return m.globalSearchSelectMatchView()
 	default:
 		return m.listView()
 	}
+}
+
+// searchView renders the search input overlay on top of the list view
+func (m Model) searchView() string {
+	// Render normal list view first
+	listWidth := ListPaneWidth
+	previewWidth := m.calculatePreviewWidth()
+	contentHeight := m.height - 2 // Leave room for search bar
+
+	if contentHeight < MinContentHeight {
+		contentHeight = MinContentHeight
+	}
+
+	// Build panes
+	leftPane := m.buildSessionListPane(listWidth, contentHeight)
+
+	var rightPane string
+	if m.splitView {
+		rightPane = m.buildSplitPreviewPane(contentHeight)
+	} else {
+		rightPane = m.buildPreviewPane(contentHeight)
+	}
+
+	// Style the panes
+	leftStyled := listPaneStyle.
+		Width(listWidth).
+		Height(contentHeight).
+		Render(leftPane)
+
+	rightStyled := previewPaneStyle.
+		Width(previewWidth).
+		Height(contentHeight).
+		Render(rightPane)
+
+	content := lipgloss.JoinHorizontal(lipgloss.Top, leftStyled, rightStyled)
+
+	// Build search bar
+	searchStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(ColorWhite)).
+		Background(lipgloss.Color("#333333")).
+		Width(m.width).
+		Padding(0, 1)
+
+	searchBar := searchStyle.Render(m.searchInput.View())
+
+	// Combine
+	var b strings.Builder
+	b.WriteString(content)
+	b.WriteString("\n")
+	b.WriteString(searchBar)
+
+	return b.String()
 }
 
 // listView renders the main split-pane view with session list and preview
@@ -136,3 +204,4 @@ func (m Model) listView() string {
 
 	return b.String()
 }
+

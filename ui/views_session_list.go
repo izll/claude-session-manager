@@ -16,6 +16,7 @@ var agentIcons = map[session.AgentType]string{
 	session.AgentCodex:    "📦",
 	session.AgentAmazonQ:  "🦜",
 	session.AgentOpenCode: "💻",
+	session.AgentCursor:   "🖱️",
 	session.AgentCustom:   "⚙️",
 	session.AgentTerminal: "🖥️",
 }
@@ -26,6 +27,100 @@ func getAgentIcon(agent session.AgentType) string {
 		return icon
 	}
 	return "?"
+}
+
+// buildAgentIconsInline builds a string of agent icons for inline display
+// maxWidth limits how many icons can be shown (each icon is ~2 chars wide)
+func (m Model) buildAgentIconsInline(inst *session.Instance, maxWidth int) string {
+	if maxWidth < 3 {
+		return ""
+	}
+
+	// Collect all agent types (main + tabs)
+	var agents []session.AgentType
+	agents = append(agents, inst.Agent)
+
+	for _, fw := range inst.FollowedWindows {
+		if fw.Agent != session.AgentTerminal {
+			agents = append(agents, fw.Agent)
+		}
+	}
+
+	// Build icons string, respecting width limit
+	// Each icon takes approximately 2-3 chars (emoji + space)
+	var icons strings.Builder
+	icons.WriteString(" ")
+	usedWidth := 1
+
+	for i, agent := range agents {
+		icon := getAgentIcon(agent)
+		iconWidth := 2 // emoji width approximation
+
+		// Check if we have room for this icon (and maybe "..." indicator)
+		if i < len(agents)-1 && usedWidth+iconWidth+3 > maxWidth {
+			// Not enough room for remaining icons, add indicator
+			icons.WriteString("…")
+			break
+		}
+		if usedWidth+iconWidth > maxWidth {
+			break
+		}
+
+		icons.WriteString(icon)
+		usedWidth += iconWidth
+	}
+
+	return icons.String()
+}
+
+// matchesSearch checks if an instance matches the search query
+func (m Model) matchesSearch(inst *session.Instance) bool {
+	if !m.searchActive || m.searchQuery == "" {
+		return true
+	}
+	query := m.searchQuery // already lowercase
+
+	// Check session name
+	if strings.Contains(strings.ToLower(inst.Name), query) {
+		return true
+	}
+	// Check session notes
+	if strings.Contains(strings.ToLower(inst.Notes), query) {
+		return true
+	}
+	// Check followed window names and notes
+	for _, fw := range inst.FollowedWindows {
+		if strings.Contains(strings.ToLower(fw.Name), query) {
+			return true
+		}
+		if strings.Contains(strings.ToLower(fw.Notes), query) {
+			return true
+		}
+	}
+	// Check live tmux window names (tabs)
+	if inst.Status == session.StatusRunning {
+		windows := inst.GetWindowList()
+		for _, w := range windows {
+			if strings.Contains(strings.ToLower(w.Name), query) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// getFilteredInstances returns instances filtered by current search query
+func (m Model) getFilteredInstances() []*session.Instance {
+	if !m.searchActive || m.searchQuery == "" {
+		return m.instances
+	}
+	var filtered []*session.Instance
+	for _, inst := range m.instances {
+		if m.matchesSearch(inst) {
+			filtered = append(filtered, inst)
+		}
+	}
+	return filtered
 }
 
 // renderSessionRow renders a single session row with all color and style logic
@@ -53,7 +148,8 @@ func (m Model) renderSessionRow(inst *session.Instance, index int, listWidth int
 
 	// Add marker for split view
 	if m.markedSessionID == inst.ID {
-		status += dimStyle.Render("◆")
+		pinStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFF00"))
+		status += " " + pinStyle.Render("◆")
 	}
 
 	// Truncate name to fit
@@ -62,7 +158,7 @@ func (m Model) renderSessionRow(inst *session.Instance, index int, listWidth int
 	if m.showAgentIcons {
 		iconLen = 3 // space + emoji
 	}
-	maxNameLen := listWidth - 6 - iconLen
+	maxNameLen := listWidth - 8 - iconLen // -2 extra for pin marker
 	if maxNameLen < 10 {
 		maxNameLen = 10
 	}
@@ -82,13 +178,22 @@ func (m Model) renderSessionRow(inst *session.Instance, index int, listWidth int
 		}
 	}
 
-	// Append agent icon if enabled (but not if there are multiple agent tabs)
+	// Append agent icon(s) if enabled
 	displayName := name
 	displayStyledName := styledName
-	if m.showAgentIcons && agentTabCount == 0 {
-		icon := " " + getAgentIcon(inst.Agent)
-		displayName = name + icon
-		displayStyledName = styledName + icon
+	if m.showAgentIcons {
+		if m.hideStatusLines && agentTabCount > 0 {
+			// Status lines hidden with multiple agents: show all icons inline
+			icons := m.buildAgentIconsInline(inst, listWidth-len(name)-8)
+			displayName = name + icons
+			displayStyledName = styledName + icons
+		} else if agentTabCount == 0 {
+			// Single agent or status lines visible: show single icon
+			icon := " " + getAgentIcon(inst.Agent)
+			displayName = name + icon
+			displayStyledName = styledName + icon
+		}
+		// else: multiple agents with status lines visible - icons shown on each status line
 	}
 
 	// Render the row
@@ -324,35 +429,98 @@ func (m Model) buildSessionListPane(listWidth, contentHeight int) string {
 	leftPane.WriteString(m.buildProjectNameRow(listWidth))
 	leftPane.WriteString("\n")
 
-	if len(m.instances) == 0 && len(m.groups) == 0 {
-		leftPane.WriteString(" No sessions\n")
-		leftPane.WriteString(dimStyle.Render(" Press 'n' to create"))
+	// Get filtered instances
+	instances := m.getFilteredInstances()
+
+	if len(instances) == 0 && len(m.groups) == 0 && !m.hasFavorites() {
+		if m.searchActive {
+			leftPane.WriteString(" No matches\n")
+			leftPane.WriteString(dimStyle.Render(" Press ESC to clear"))
+		} else {
+			leftPane.WriteString(" No sessions\n")
+			leftPane.WriteString(dimStyle.Render(" Press 'n' to create"))
+		}
 		return leftPane.String()
 	}
 
-	// If there are groups, use grouped view
-	if len(m.groups) > 0 {
+	// If there are groups or favorites, use grouped view
+	if len(m.groups) > 0 || m.hasFavorites() {
 		return m.buildGroupedSessionListPane(listWidth, contentHeight)
 	}
 
 	// Otherwise, use flat view (original behavior)
-	// Calculate visible range
-	linesPerSession := 2
-	if !m.compactList {
-		linesPerSession = 3
-	}
-	maxVisible := contentHeight / linesPerSession
-	if maxVisible < 3 {
-		maxVisible = 3
+	// Calculate actual line count per session (dynamic based on tabs)
+	getSessionHeight := func(inst *session.Instance) int {
+		lines := 1 // Session name row
+		if !m.hideStatusLines {
+			lines++ // Main status line
+			// Count additional status lines for followed windows (non-terminal)
+			for _, fw := range inst.FollowedWindows {
+				if fw.Agent != session.AgentTerminal {
+					lines++
+				}
+			}
+		}
+		if !m.compactList {
+			lines++ // Empty line between sessions
+		}
+		return lines
 	}
 
-	startIdx := 0
-	if m.cursor >= maxVisible {
-		startIdx = m.cursor - maxVisible + 1
+	// Calculate which sessions fit in view
+	// Adjust cursor if needed
+	cursor := m.cursor
+	if cursor >= len(instances) {
+		cursor = len(instances) - 1
 	}
-	endIdx := startIdx + maxVisible
-	if endIdx > len(m.instances) {
-		endIdx = len(m.instances)
+	if cursor < 0 {
+		cursor = 0
+	}
+
+	// Find start index by counting lines backwards from cursor
+	// Calculate fixed header overhead dynamically
+	headerHeight := 2 // Header with separator
+	if m.activeProject != nil {
+		headerHeight += 2 // Project name row with separator
+	}
+	headerHeight += 1 // Extra newline after header/project
+	headerHeight += 3 // Reserve for scroll indicators + safety buffer
+	availableHeight := contentHeight - headerHeight
+	if availableHeight < 5 {
+		availableHeight = 5
+	}
+	startIdx := 0
+	endIdx := len(instances)
+
+	// First, calculate total height up to and including cursor
+	heightToCursor := 0
+	for i := 0; i <= cursor && i < len(instances); i++ {
+		heightToCursor += getSessionHeight(instances[i])
+	}
+
+	// If cursor position exceeds available height, scroll
+	if heightToCursor > availableHeight {
+		// Find start index that fits cursor in view
+		usedHeight := 0
+		for i := cursor; i >= 0; i-- {
+			h := getSessionHeight(instances[i])
+			if usedHeight+h > availableHeight {
+				startIdx = i + 1
+				break
+			}
+			usedHeight += h
+		}
+	}
+
+	// Calculate end index based on available height
+	usedHeight := 0
+	for i := startIdx; i < len(instances); i++ {
+		h := getSessionHeight(instances[i])
+		if usedHeight+h > availableHeight {
+			endIdx = i
+			break
+		}
+		usedHeight += h
 	}
 
 	// Show scroll indicator at top
@@ -361,11 +529,18 @@ func (m Model) buildSessionListPane(listWidth, contentHeight int) string {
 	}
 
 	for i := startIdx; i < endIdx; i++ {
-		leftPane.WriteString(m.renderSessionRow(m.instances[i], i, listWidth))
+		// When filtering, use filtered index for cursor; otherwise use original index
+		var cursorIdx int
+		if m.searchActive {
+			cursorIdx = i // Filtered index
+		} else {
+			cursorIdx = m.findInstanceIndex(instances[i].ID) // Original index
+		}
+		leftPane.WriteString(m.renderSessionRow(instances[i], cursorIdx, listWidth))
 	}
 
 	// Show scroll indicator at bottom
-	remaining := len(m.instances) - endIdx
+	remaining := len(instances) - endIdx
 	if remaining > 0 {
 		leftPane.WriteString(dimStyle.Render(fmt.Sprintf("  ↓ %d more\n", remaining)))
 	}
@@ -388,28 +563,100 @@ func (m *Model) buildGroupedSessionListPane(listWidth, contentHeight int) string
 	m.buildVisibleItems()
 
 	if len(m.visibleItems) == 0 {
-		leftPane.WriteString(" No sessions\n")
-		leftPane.WriteString(dimStyle.Render(" Press 'n' to create"))
+		if m.searchActive {
+			leftPane.WriteString(" No matches\n")
+			leftPane.WriteString(dimStyle.Render(" Press ESC to clear"))
+		} else {
+			leftPane.WriteString(" No sessions\n")
+			leftPane.WriteString(dimStyle.Render(" Press 'n' to create"))
+		}
 		return leftPane.String()
 	}
 
-	// Calculate visible range
-	linesPerItem := 2
-	if !m.compactList {
-		linesPerItem = 3
-	}
-	maxVisible := contentHeight / linesPerItem
-	if maxVisible < 3 {
-		maxVisible = 3
+	// Calculate actual line count per item (dynamic based on tabs)
+	getItemHeight := func(item visibleItem) int {
+		if item.isGroup {
+			lines := 1 // Group header row
+			if !m.compactList {
+				lines++ // Empty line / vertical connector
+			}
+			return lines
+		}
+		// Separator
+		if item.instance == nil {
+			return 1 // Single empty line
+		}
+		// Session
+		inst := item.instance
+		lines := 1 // Session name row
+		if !m.hideStatusLines {
+			lines++ // Main status line
+			// Count additional status lines for followed windows (non-terminal)
+			for _, fw := range inst.FollowedWindows {
+				if fw.Agent != session.AgentTerminal {
+					lines++
+				}
+			}
+		}
+		if !m.compactList {
+			lines++ // Empty line between sessions
+		}
+		return lines
 	}
 
-	startIdx := 0
-	if m.cursor >= maxVisible {
-		startIdx = m.cursor - maxVisible + 1
+	// Calculate which items fit in view
+	// Calculate fixed header overhead dynamically
+	headerHeight := 2 // Header with separator
+	if m.activeProject != nil {
+		headerHeight += 2 // Project name row with separator
 	}
-	endIdx := startIdx + maxVisible
-	if endIdx > len(m.visibleItems) {
-		endIdx = len(m.visibleItems)
+	headerHeight += 1 // Extra newline after header/project
+	headerHeight += 3 // Reserve for scroll indicators + safety buffer
+	availableHeight := contentHeight - headerHeight
+	if availableHeight < 5 {
+		availableHeight = 5
+	}
+	startIdx := 0
+	endIdx := len(m.visibleItems)
+
+	// Ensure cursor is within bounds
+	cursor := m.cursor
+	if cursor >= len(m.visibleItems) {
+		cursor = len(m.visibleItems) - 1
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+
+	// First, calculate total height up to and including cursor
+	heightToCursor := 0
+	for i := 0; i <= cursor && i < len(m.visibleItems); i++ {
+		heightToCursor += getItemHeight(m.visibleItems[i])
+	}
+
+	// If cursor position exceeds available height, scroll
+	if heightToCursor > availableHeight {
+		// Find start index that fits cursor in view
+		usedHeight := 0
+		for i := cursor; i >= 0; i-- {
+			h := getItemHeight(m.visibleItems[i])
+			if usedHeight+h > availableHeight {
+				startIdx = i + 1
+				break
+			}
+			usedHeight += h
+		}
+	}
+
+	// Calculate end index based on available height
+	usedHeight := 0
+	for i := startIdx; i < len(m.visibleItems); i++ {
+		h := getItemHeight(m.visibleItems[i])
+		if usedHeight+h > availableHeight {
+			endIdx = i
+			break
+		}
+		usedHeight += h
 	}
 
 	// Show scroll indicator at top
@@ -421,10 +668,15 @@ func (m *Model) buildGroupedSessionListPane(listWidth, contentHeight int) string
 		item := m.visibleItems[i]
 		if item.isGroup {
 			leftPane.WriteString(m.renderGroupRow(item.group, i, listWidth))
+		} else if item.instance == nil {
+			// Separator - empty line
+			leftPane.WriteString("\n")
 		} else {
 			// Check if this is the last session in its group
 			isLast := m.isLastInGroup(i)
-			leftPane.WriteString(m.renderGroupedSessionRow(item.instance, i, listWidth, isLast))
+			// Favorites are in a group context even if their GroupID is empty
+			inGroupContext := item.instance.Favorite
+			leftPane.WriteString(m.renderGroupedSessionRow(item.instance, i, listWidth, isLast, inGroupContext))
 		}
 	}
 
@@ -441,8 +693,21 @@ func (m *Model) buildGroupedSessionListPane(listWidth, contentHeight int) string
 func (m Model) renderGroupRow(group *session.Group, index int, listWidth int) string {
 	var row strings.Builder
 
+	// Determine if this is the favorites group
+	isFavorites := group.ID == FavoritesGroupID
+
 	// Count sessions in this group
-	sessionCount := len(m.getSessionsInGroup(group.ID))
+	var sessionCount int
+	if isFavorites {
+		// Count favorites directly
+		for _, inst := range m.instances {
+			if inst.Favorite {
+				sessionCount++
+			}
+		}
+	} else {
+		sessionCount = len(m.getSessionsInGroup(group.ID))
+	}
 
 	// Collapse indicator
 	collapseIcon := "▼"
@@ -450,15 +715,23 @@ func (m Model) renderGroupRow(group *session.Group, index int, listWidth int) st
 		collapseIcon = "▶"
 	}
 
-	// Group style - use custom color if set, otherwise default purple
+	// Group icon - star for favorites, folder for regular groups
+	groupIcon := "📁"
+	if isFavorites {
+		groupIcon = "⭐"
+	}
+
+	// Group style - use custom color if set, otherwise default purple (gold for favorites)
 	groupColor := ColorPurple
-	if group.Color != "" && group.Color != "auto" {
+	if isFavorites {
+		groupColor = ColorYellow // Gold color for favorites
+	} else if group.Color != "" && group.Color != "auto" {
 		groupColor = group.Color
 	}
 	groupStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(groupColor)).Bold(true)
 
-	// Apply background color if set
-	if group.BgColor != "" {
+	// Apply background color if set (not for favorites)
+	if !isFavorites && group.BgColor != "" {
 		groupStyle = groupStyle.Background(lipgloss.Color(group.BgColor))
 		// Auto-contrast if no custom foreground or auto
 		if group.Color == "" || group.Color == "auto" {
@@ -477,28 +750,30 @@ func (m Model) renderGroupRow(group *session.Group, index int, listWidth int) st
 	nameAndCount := fmt.Sprintf("%s [%d]", name, sessionCount)
 	styledContent := groupStyle.Render(nameAndCount)
 
-	// Full row background - only the name and count, not icons
-	if group.FullRowColor && group.BgColor != "" {
+	// Full row background - only the name and count, not icons (not for favorites)
+	if !isFavorites && group.FullRowColor && group.BgColor != "" {
 		// Calculate remaining width for the colored part (after prefix + icons)
 		prefixLen := 7 // "   📁▼ " or " ▸ 📁▼ "
 		contentWidth := listWidth - prefixLen
 		fullRowStyle := lipgloss.NewStyle().Background(lipgloss.Color(group.BgColor)).Width(contentWidth)
 		if selected {
-			row.WriteString(fmt.Sprintf(" %s 📁%s ", listSelectedStyle.Render("▸"), collapseIcon))
+			row.WriteString(fmt.Sprintf(" %s %s%s ", listSelectedStyle.Render("▸"), groupIcon, collapseIcon))
 			row.WriteString(fullRowStyle.Render(styledContent))
 			row.WriteString("\n")
 		} else {
-			row.WriteString(fmt.Sprintf("   📁%s ", collapseIcon))
+			row.WriteString(fmt.Sprintf("   %s%s ", groupIcon, collapseIcon))
 			row.WriteString(fullRowStyle.Render(styledContent))
 			row.WriteString("\n")
 		}
 	} else if selected {
-		row.WriteString(fmt.Sprintf(" %s 📁%s %s\n",
+		row.WriteString(fmt.Sprintf(" %s %s%s %s\n",
 			listSelectedStyle.Render("▸"),
+			groupIcon,
 			collapseIcon,
 			styledContent))
 	} else {
-		row.WriteString(fmt.Sprintf("   📁%s %s\n",
+		row.WriteString(fmt.Sprintf("   %s%s %s\n",
+			groupIcon,
 			collapseIcon,
 			styledContent))
 	}
@@ -515,12 +790,14 @@ func (m Model) renderGroupRow(group *session.Group, index int, listWidth int) st
 }
 
 // renderGroupedSessionRow renders a session row with indent for grouped view
-func (m Model) renderGroupedSessionRow(inst *session.Instance, index int, listWidth int, isLast bool) string {
+// inGroupContext indicates if the session should be rendered with group tree connectors
+// (even if inst.GroupID is empty, e.g., for favorites group)
+func (m Model) renderGroupedSessionRow(inst *session.Instance, index int, listWidth int, isLast bool, inGroupContext bool) string {
 	var row strings.Builder
 
 	// Tree connectors for grouped sessions
 	var prefix, lastLinePrefix string
-	if inst.GroupID != "" {
+	if inst.GroupID != "" || inGroupContext {
 		if isLast {
 			prefix = "  └──"
 			lastLinePrefix = "    " // 4 spaces to align └─ under ●
@@ -554,7 +831,8 @@ func (m Model) renderGroupedSessionRow(inst *session.Instance, index int, listWi
 
 	// Add marker for split view
 	if m.markedSessionID == inst.ID {
-		status += dimStyle.Render("◆")
+		pinStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFF00"))
+		status += " " + pinStyle.Render("◆")
 	}
 
 	// Truncate name to fit (accounting for prefix and icon)
@@ -563,7 +841,7 @@ func (m Model) renderGroupedSessionRow(inst *session.Instance, index int, listWi
 	if m.showAgentIcons {
 		iconLen = 3 // space + emoji
 	}
-	maxNameLen := listWidth - 10 - iconLen
+	maxNameLen := listWidth - 12 - iconLen // -2 extra for pin marker
 	if maxNameLen < 8 {
 		maxNameLen = 8
 	}
@@ -583,13 +861,22 @@ func (m Model) renderGroupedSessionRow(inst *session.Instance, index int, listWi
 		}
 	}
 
-	// Append agent icon if enabled (but not if there are multiple agent tabs)
+	// Append agent icon(s) if enabled
 	displayName := name
 	displayStyledName := styledName
-	if m.showAgentIcons && agentTabCount == 0 {
-		icon := " " + getAgentIcon(inst.Agent)
-		displayName = name + icon
-		displayStyledName = styledName + icon
+	if m.showAgentIcons {
+		if m.hideStatusLines && agentTabCount > 0 {
+			// Status lines hidden with multiple agents: show all icons inline
+			icons := m.buildAgentIconsInline(inst, listWidth-len(name)-12)
+			displayName = name + icons
+			displayStyledName = styledName + icons
+		} else if agentTabCount == 0 {
+			// Single agent or status lines visible: show single icon
+			icon := " " + getAgentIcon(inst.Agent)
+			displayName = name + icon
+			displayStyledName = styledName + icon
+		}
+		// else: multiple agents with status lines visible - icons shown on each status line
 	}
 
 	// Render the row
