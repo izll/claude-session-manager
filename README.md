@@ -1,9 +1,19 @@
-# Agent Session Manager (ASMGR)
+<p align="center">
+  <img src="assets/logo.png" alt="ASMGR Logo" width="200">
+</p>
 
-A powerful terminal UI (TUI) application for managing multiple AI coding assistant CLI sessions using tmux. Inspired by [Claude Squad](https://github.com/smtg-ai/claude-squad).
+<p align="center">
+  A powerful terminal UI (TUI) application for managing multiple AI coding assistant CLI sessions using tmux.
+</p>
 
-![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat&logo=go)
-![License](https://img.shields.io/badge/License-MIT-green.svg)
+<p align="center">
+  <img src="https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat&logo=go" alt="Go">
+  <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
+</p>
+
+---
+
+Inspired by [Claude Squad](https://github.com/smtg-ai/claude-squad).
 
 ## Supported AI Agents
 
@@ -99,15 +109,15 @@ Install options:
 **Debian/Ubuntu (.deb):**
 ```bash
 # Download from releases
-wget https://github.com/izll/agent-session-manager/releases/download/v0.7.5/asmgr_0.6.5_linux_x86_64.deb
-sudo dpkg -i asmgr_0.6.5_linux_x86_64.deb
+wget https://github.com/izll/agent-session-manager/releases/download/v0.7.5/asmgr_0.7.5_linux_x86_64.deb
+sudo dpkg -i asmgr_0.7.5_linux_x86_64.deb
 ```
 
 **RedHat/Fedora/Rocky (.rpm):**
 ```bash
 # Download from releases
-wget https://github.com/izll/agent-session-manager/releases/download/v0.7.5/asmgr_0.6.5_linux_x86_64.rpm
-sudo rpm -i asmgr_0.6.5_linux_x86_64.rpm
+wget https://github.com/izll/agent-session-manager/releases/download/v0.7.5/asmgr_0.7.5_linux_x86_64.rpm
+sudo rpm -i asmgr_0.7.5_linux_x86_64.rpm
 ```
 
 ### Build from Source
