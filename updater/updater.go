@@ -16,12 +16,13 @@ import (
 )
 
 const (
-	RepoOwner      = "izll"
-	RepoName       = "agent-session-manager"
-	BinaryName     = "asmgr"
-	CheckTimeout   = 5 * time.Second
-	CheckInterval  = 24 * time.Hour // Check for updates once per day
-	LastCheckFile  = "last_update_check"
+	RepoOwner           = "izll"
+	RepoName            = "agent-session-manager"
+	BinaryName          = "asmgr"
+	CheckTimeout        = 5 * time.Second
+	CheckInterval       = 24 * time.Hour // Check for updates once per day
+	LastCheckFile       = "last_update_check"
+	AvailableUpdateFile = "available_update"
 )
 
 type GitHubRelease struct {
@@ -71,6 +72,50 @@ func SaveLastCheckTime() {
 
 	lastCheckPath := filepath.Join(configDir, LastCheckFile)
 	os.WriteFile(lastCheckPath, []byte(time.Now().Format(time.RFC3339)), 0644)
+}
+
+// GetCachedAvailableUpdate returns the cached available update version (if any)
+func GetCachedAvailableUpdate() string {
+	configDir := getConfigDir()
+	if configDir == "" {
+		return ""
+	}
+
+	cachePath := filepath.Join(configDir, AvailableUpdateFile)
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		return ""
+	}
+
+	return strings.TrimSpace(string(data))
+}
+
+// SaveAvailableUpdate caches the available update version
+func SaveAvailableUpdate(version string) {
+	configDir := getConfigDir()
+	if configDir == "" {
+		return
+	}
+
+	os.MkdirAll(configDir, 0755)
+	cachePath := filepath.Join(configDir, AvailableUpdateFile)
+
+	if version == "" {
+		// No update available - remove cache file
+		os.Remove(cachePath)
+	} else {
+		os.WriteFile(cachePath, []byte(version), 0644)
+	}
+}
+
+// ClearAvailableUpdate removes the cached update (call after successful update)
+func ClearAvailableUpdate() {
+	configDir := getConfigDir()
+	if configDir == "" {
+		return
+	}
+	cachePath := filepath.Join(configDir, AvailableUpdateFile)
+	os.Remove(cachePath)
 }
 
 // IsPackageManaged checks if the binary was installed via a package manager

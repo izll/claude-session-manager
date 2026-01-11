@@ -26,7 +26,17 @@ func (m Model) projectSelectView() string {
 
 	content.WriteString("\n")
 	content.WriteString(lipgloss.PlaceHorizontal(boxWidth, lipgloss.Center, title))
-	content.WriteString("\n\n")
+	content.WriteString("\n")
+
+	// Show update notification if available
+	if m.updateAvailable != "" {
+		updateStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(ColorYellow)).
+			Bold(true)
+		updateMsg := fmt.Sprintf("⬆ New version %s available! Press U to update", m.updateAvailable)
+		content.WriteString(lipgloss.PlaceHorizontal(boxWidth, lipgloss.Center, updateStyle.Render(updateMsg)))
+	}
+	content.WriteString("\n")
 
 	// Build the project list
 	var listContent strings.Builder
@@ -142,6 +152,7 @@ func (m Model) projectSelectView() string {
 		keyStyle.Render("e") + descStyle.Render(" rename"),
 		keyStyle.Render("d") + descStyle.Render(" delete"),
 		keyStyle.Render("i") + descStyle.Render(" import"),
+		keyStyle.Render("U") + descStyle.Render(" update"),
 		keyStyle.Render("q") + descStyle.Render(" quit"),
 	}
 

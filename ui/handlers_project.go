@@ -98,6 +98,12 @@ func (m Model) handleProjectSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("select a project first to import sessions into")
 			m.state = stateError
 		}
+
+	case "U":
+		// Check for updates
+		m.previousState = stateProjectSelect
+		m.state = stateConfirmUpdate
+		return m, nil
 	}
 
 	return m, nil

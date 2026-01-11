@@ -345,6 +345,7 @@ func NewModel() (Model, error) {
 		activityState:       make(map[string]session.SessionActivity),
 		windowActivityState: make(map[string]map[int]session.SessionActivity),
 		diffPane:            NewDiffPane(),
+		updateAvailable:     updater.GetCachedAvailableUpdate(), // Load cached update
 	}
 
 	return m, nil
@@ -484,6 +485,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		newVersion := string(msg)
 		if newVersion != "" {
 			m.updateAvailable = newVersion
+			updater.SaveAvailableUpdate(newVersion) // Cache for next startup
 		}
 
 		// If we're actively checking for updates (user pressed U)
@@ -555,8 +557,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.previousState = m.state
 			m.state = stateError
 		} else {
-			// Update successful - show success message
+			// Update successful - show success message and clear cache
 			m.successMsg = fmt.Sprintf("Updated to %s - please restart", m.updateAvailable)
+			updater.ClearAvailableUpdate()
+			m.updateAvailable = ""
 			m.previousState = m.state
 			m.state = stateUpdateSuccess
 		}
