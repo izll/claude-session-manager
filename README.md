@@ -2,6 +2,8 @@
   <img src="assets/logo.png" alt="ASMGR Logo" width="200">
 </p>
 
+<h1 align="center">Agent Session Manager</h1>
+
 <p align="center">
   A powerful terminal UI (TUI) application for managing multiple AI coding assistant CLI sessions using tmux.
 </p>
